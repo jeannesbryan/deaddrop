@@ -33,7 +33,7 @@ sudo apt update
 sudo apt install nginx php-fpm php-sqlite3 php-curl sqlite3 tor curl -y
 
 # 2. Clone the repo to your web directory
-git clone [https://github.com/jeannesbryan/deaddrop.git](https://github.com/jeannesbryan/deaddrop.git) /var/www/deaddrop
+git clone https://github.com/jeannesbryan/deaddrop.git /var/www/deaddrop
 sudo chown -R www-data:www-data /var/www/deaddrop
 sudo chmod -R 775 /var/www/deaddrop
 
