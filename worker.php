@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v1.0)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v1.0 - E2EE Ready)
 // ==========================================
 require_once 'db.php';
 
@@ -14,70 +14,65 @@ echo "============================================\n\n";
 try {
     $target_urls = [];
 
-    // 1A. CHECK PING QUEUE (Foreign nodes replying/mentioning us)
     $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
-    $pings = $stmt_ping->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($pings as $p) {
+    foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) {
         $target_urls[] = $p['source_url'];
     }
 
-    // 1B. CHECK RADAR LIST (Peers we follow)
     $stmt_follow = $db->query("SELECT onion_url FROM following");
-    $follows = $stmt_follow->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($follows as $f) {
-        if (!in_array($f['onion_url'], $target_urls)) {
-            $target_urls[] = $f['onion_url'];
-        }
+    foreach ($stmt_follow->fetchAll(PDO::FETCH_ASSOC) as $f) {
+        if (!in_array($f['onion_url'], $target_urls)) $target_urls[] = $f['onion_url'];
     }
 
-    if (empty($target_urls)) {
-        die("[*] Radar and Queue are empty. Going back to sleep...\n");
-    }
+    if (empty($target_urls)) die("[*] Radar and Queue are empty. Going back to sleep...\n");
 
-    // 2. BEGIN PATROL & DATA EXTRACTION
+    // Reconstruct Libsodium Keypair for Decryption
+    $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
+        base64_decode($config['private_key']), 
+        base64_decode($config['public_key'])
+    );
+
     foreach ($target_urls as $onion_url) {
         $onion_url = rtrim($onion_url, '/');
         $outbox_url = $onion_url . '/outbox.json';
-        $parsed_url = parse_url($onion_url);
-        $host_domain = $parsed_url['host'] ?? '';
+        $host_domain = parse_url($onion_url)['host'] ?? '';
 
         echo "[>] Inspecting Node: " . $host_domain . "\n";
 
         $is_onion = preg_match('/\.onion$/i', $host_domain);
         $is_local = ($host_domain === 'localhost' || $host_domain === '127.0.0.1');
 
-        if (!$is_onion && !$is_local) {
-            echo "    [!] ERROR: Protocol rejected. Not a Darknet network.\n\n";
-            continue;
-        }
+        if (!$is_onion && !$is_local) continue;
 
         $ch = curl_init($outbox_url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 15); 
+        curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+        curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($clientp, $dltotal, $dlnow, $ultotal, $ulnow) {
+            if ($dltotal > 2097152 || $dlnow > 2097152) return 1; 
+            return 0;
+        });
 
-        // Tor Proxy Enforcement
         if ($is_onion) {
             curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
             curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
-            echo "    [+] Tor Proxy (SOCKS5) enabled.\n";
-        } else {
-            echo "    [+] Localhost Bypass enabled (Dev Mode).\n";
         }
 
         $json_response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($http_code !== 200 || !$json_response) {
-            echo "    [!] Failed to pull data. Node might be offline.\n\n";
-            continue;
-        }
+        if ($http_code !== 200 || !$json_response) continue;
 
         $feed = json_decode($json_response, true);
-        if (!$feed || !isset($feed['posts']) || !is_array($feed['posts'])) {
-            echo "    [!] Invalid outbox.json format.\n\n";
-            continue;
+        if (!$feed || !isset($feed['posts'])) continue;
+
+        // 🔐 PHASE 1 E2EE: Capture and Update Target's Public Key
+        $remote_pub_key = $feed['public_key'] ?? null;
+        if ($remote_pub_key) {
+            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub WHERE onion_url = :url");
+            $stmt_key->execute([':pub' => $remote_pub_key, ':url' => $onion_url]);
         }
 
         $author_name = $feed['author'] ?? 'Unknown Node';
@@ -96,16 +91,29 @@ try {
 
             $stmt_check->execute([':rid' => $remote_id]);
             if ($stmt_check->fetchColumn() == 0) {
-                // This is where cross-validation belongs. 
-                // If the URL comes from ping_queue (not following),
-                // the Worker SHOULD ideally only save the post if it replies to our ID.
-                // But for v1.0, we extract everything like a P2P radar.
+                
+                // 🔐 PHASE 1 E2EE: Decryption Protocol
+                $raw_content = $post['content'] ?? '';
+                if (strpos($raw_content, 'E2EE:') === 0) {
+                    $ciphertext = base64_decode(substr($raw_content, 5));
+                    $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
+                    
+                    if ($decrypted !== false) {
+                        $raw_content = "[🔓 DECRYPTED PRIVATE DROP]\n" . $decrypted;
+                    } else {
+                        $raw_content = "[🔒 ENCRYPTED CIPHERTEXT] // This message is securely locked for another node.";
+                    }
+                }
+
+                $safe_media = $post['media_url'] ?? null;
+                if ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) $safe_media = null;
+
                 $stmt_insert->execute([
                     ':rid'     => $remote_id,
                     ':name'    => $author_name,
                     ':host'    => $author_domain,
-                    ':content' => $post['content'] ?? '',
-                    ':media'   => $post['media_url'] ?? null,
+                    ':content' => $raw_content,
+                    ':media'   => $safe_media,
                     ':reply'   => $post['reply_to'] ?? null,
                     ':waktu'   => $post['timestamp'] ?? gmdate('Y-m-d\TH:i:s\Z')
                 ]);
@@ -113,29 +121,12 @@ try {
             }
         }
 
-        // If this is a followed node, update the pulled timestamp
-        $db->prepare("UPDATE following SET last_pulled = CURRENT_TIMESTAMP WHERE onion_url = :url")
-           ->execute([':url' => $onion_url]);
-
-        echo "    [+] Successfully extracted $new_posts_count new signals from @$author_name.\n\n";
+        $db->prepare("UPDATE following SET last_pulled = CURRENT_TIMESTAMP WHERE onion_url = :url")->execute([':url' => $onion_url]);
+        echo "    [+] Extracted $new_posts_count new signals from @$author_name.\n\n";
     }
 
-    // 3. CLEAR PING QUEUE
-    // Since all ping_queue entries were processed above, we clear the table.
-    if (count($pings) > 0) {
-        $db->exec("DELETE FROM ping_queue");
-        echo "[*] Ping_Queue successfully cleared.\n";
-    }
-
-    // 4. AUTO-PRUNING (Garbage Collection)
-    echo "[*] Executing Garbage Collection (Auto-Pruning)...\n";
-    $db->exec("
-        DELETE FROM timeline 
-        WHERE is_local = 0 AND id NOT IN (
-            SELECT id FROM timeline WHERE is_local = 0 ORDER BY created_at DESC LIMIT 2000
-        )
-    ");
-    echo "[+] Garbage Collection completed.\n";
+    $db->exec("DELETE FROM ping_queue");
+    $db->exec("DELETE FROM timeline WHERE is_local = 0 AND id NOT IN (SELECT id FROM timeline WHERE is_local = 0 ORDER BY created_at DESC LIMIT 2000)");
 
 } catch (Exception $e) {
     echo "\n[CRITICAL ERROR] " . $e->getMessage() . "\n";

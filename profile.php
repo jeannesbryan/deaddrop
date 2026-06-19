@@ -95,15 +95,15 @@ try {
 <body class="t-crt">
 
 <div class="t-container t-box-md mt-4">
-    <header class="t-border-bottom mb-4 pb-3">
-        <div class="d-flex justify-content-between align-items-end">
-            <div>
-                <h1 class="t-glow font-bold m-0 text-warning" style="font-size: 1.8rem;">> <?= htmlspecialchars($profile_name) ?>_</h1>
-                <div class="text-muted fs-small mt-1">INSPECTING NODE: <?= htmlspecialchars($target_host) ?></div>
+    <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom" style="padding-bottom: 15px;">
+        <div>
+            <h1 class="m-0 font-bold t-glow" style="font-size: 1.8rem; color: var(--t-green);">&gt; <?= htmlspecialchars($profile_name) ?>_</h1>
+            <div class="mt-1 fs-small font-bold text-muted">
+                NODE: <?= htmlspecialchars($target_host) ?>
             </div>
-            <a href="index.php" class="t-btn outline m-0">[ MAIN RADAR ]</a>
         </div>
-    </header>
+        <a href="index.php" class="t-btn">⇐ Back</a>
+    </div>
 
     <?php if (!empty($status_msg)): ?>
         <div class="t-alert <?= $status_class ?> mb-4" style="border-color: var(--t-<?= $status_class ?>); color: var(--t-<?= $status_class ?>);">
@@ -132,7 +132,7 @@ try {
     <?php endif; ?>
 
     <main>
-        <div class="font-bold mb-3 text-warning" style="text-transform: uppercase;">[ Local Cached Data ]</div>
+        <div class="font-bold mb-3" style="text-transform: uppercase; color: var(--t-green);">[ Local Cached Data ]</div>
         
         <?php if (empty($feeds)): ?>
             <div class="t-empty-state">
@@ -144,7 +144,7 @@ try {
                 <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none;">
                     <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
                         <div>
-                            @<span class="t-badge outline font-bold"><?= htmlspecialchars($post['author_name']) ?></span>
+                            <span class="t-badge outline font-bold"><?= htmlspecialchars($post['author_name']) ?></span>
                         </div>
                         <div class="text-muted">ID: <?= htmlspecialchars($post['remote_id']) ?></div>
                     </div>

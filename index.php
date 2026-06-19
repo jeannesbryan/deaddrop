@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v1.0 Final)
+// 🏴‍☠️ DEADDROP: THE HOLOGRAM
 // ==========================================
 require_once 'db.php';
 
@@ -53,10 +53,15 @@ function get_parent_post($db, $reply_to_id) {
 <body class="t-crt">
 
 <div class="t-container t-box-md mt-4">
-    <header class="t-border-bottom mb-4 pb-3">
-        <h1 class="t-glow font-bold m-0" style="font-size: 1.8rem; color: var(--t-green);">> <?= htmlspecialchars($config['node_name']) ?>_</h1>
-        <div class="text-muted fs-small mt-1">NODE: <?= htmlspecialchars($config['node_url']) ?> // PROTOCOL: NANO-PUB v1.0</div>
-    </header>
+    <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom" style="padding-bottom: 15px;">
+        <div>
+            <h1 class="m-0 font-bold t-glow" style="font-size: 1.8rem; color: var(--t-green);">&gt; <?= htmlspecialchars($config['node_name']) ?>_</h1>
+            <div class="mt-1 fs-small font-bold text-muted">
+                NODE: <?= htmlspecialchars($config['node_url']) ?>
+            </div>
+        </div>
+        <a href="../index.php" class="t-btn">⇐ Back</a>
+    </div>
 
     <?php if (!empty($status_msg)): ?>
         <div class="t-alert success mb-4">[+] SUCCESS: <?= $status_msg ?></div>
@@ -68,6 +73,7 @@ function get_parent_post($db, $reply_to_id) {
             <textarea name="content" class="t-textarea mb-2" placeholder="Type your speculations or thought logs here..." required></textarea>
             
             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                <input type="text" name="target_onion" class="t-input w-auto flex-fill m-0" placeholder="Target .onion for E2EE (Optional)">
                 <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0" placeholder="Reply to Post ID (Optional)">
                 <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0" style="font-size: 0.8rem;">
             </div>

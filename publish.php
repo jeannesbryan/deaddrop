@@ -1,10 +1,9 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE
+// 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE (E2EE)
 // ==========================================
 require_once 'db.php';
 
-// Zero-JS Error Handler Function
 function terminal_error($message) {
     http_response_code(400);
     die("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='theme-color' content='#110818'><title>DeadDrop // Error</title><link href='assets/torminal.css' rel='stylesheet'></head><body class='t-crt' style='padding-top:10vh;'><div class='t-container t-box-md'><div class='t-alert danger mb-4 font-bold'>$message</div><a href='index.php' class='t-btn outline'>[ RETURN TO RADAR ]</a></div></body></html>");
@@ -15,28 +14,44 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     die("Access denied.");
 }
 
-// 1. BCRYPT AUTHENTICATION
 $input_pass = $_POST['admin_pass'] ?? '';
 if (!password_verify($input_pass, $config['admin_hash'])) {
-    sleep(2); // Mitigate brute-force attacks
+    sleep(2);
     terminal_error("[ ACCESS DENIED ] Invalid security credentials.");
 }
 
-// 2. CAPTURE TEXT PAYLOAD
 $content = trim(strip_tags($_POST['content'] ?? ''));
 $reply_to = trim(strip_tags($_POST['reply_to'] ?? ''));
 if (empty($content)) {
     terminal_error("[ ERROR ] Transmission is empty.");
 }
 
-// 3. CAPTURE & PROCESS MEDIA (Images Only)
+// 🔐 PHASE 1 E2EE: ENCRYPTION LOGIC
+$target_onion = trim(strip_tags($_POST['target_onion'] ?? ''));
+if (!empty($target_onion)) {
+    $stmt_key = $db->prepare("SELECT public_key FROM following WHERE onion_url = :url LIMIT 1");
+    $stmt_key->execute([':url' => rtrim($target_onion, '/')]);
+    $target_pub_key = $stmt_key->fetchColumn();
+
+    if (empty($target_pub_key)) {
+        terminal_error("[ E2EE ERROR ] Target Public Key not found in local radar. Ensure you have synced with their node first.");
+    }
+
+    // Seal the payload with Target's Public Key
+    $binary_target_pub = base64_decode($target_pub_key);
+    $encrypted_binary = sodium_crypto_box_seal($content, $binary_target_pub);
+    
+    // Append E2EE tag so the worker knows it needs decryption
+    $content = 'E2EE:' . base64_encode($encrypted_binary);
+}
+
+// 3. CAPTURE & PROCESS MEDIA
 $media_url = null;
 if (isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
     $file_tmp  = $_FILES['media']['tmp_name'];
     $file_name = $_FILES['media']['name'];
     $file_size = $_FILES['media']['size'];
     
-    // Limit maximum size to 2MB to conserve memory
     if ($file_size > 2097152) {
         terminal_error("[ ERROR ] Maximum image size is 2MB to conserve memory.");
     }
@@ -48,21 +63,15 @@ if (isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
         terminal_error("[ ERROR ] Image format not supported.");
     }
     
-    // OBFUSCATION: Rename file to SHA-256 Hash to prevent guessing & direct indexing
     $new_filename = hash('sha256', uniqid('', true)) . '.' . $ext;
     $upload_dir = __DIR__ . '/media/';
     
-    // Create directory if it doesn't exist
-    if (!is_dir($upload_dir)) {
-        mkdir($upload_dir, 0777, true);
-    }
+    if (!is_dir($upload_dir)) mkdir($upload_dir, 0777, true);
     
-    // Move file to media/ folder
     if (move_uploaded_file($file_tmp, $upload_dir . $new_filename)) {
-        // Save full URL to be written into JSON
+        $target_file = $upload_dir . $new_filename;
+        shell_exec('exiftool -all= -overwrite_original ' . escapeshellarg($target_file));
         $media_url = rtrim($config['node_url'], '/') . '/media/' . $new_filename;
-    } else {
-        terminal_error("[ ERROR ] Failed to move image. Check write permissions for /media/.");
     }
 }
 
@@ -71,7 +80,6 @@ try {
     $local_id = generate_local_id(); 
     $now_utc = gmdate('Y-m-d\TH:i:s\Z'); 
     
-    // Write to SQLite Timeline
     $stmt = $db->prepare("INSERT INTO timeline (remote_id, author_name, author_host, content, media_url, is_local, reply_to, created_at) 
                           VALUES (:rid, :name, :host, :content, :media, 1, :reply, :waktu)");
     
@@ -85,25 +93,24 @@ try {
         ':waktu'   => $now_utc
     ]);
 
-    // Rebuild outbox.json
     $stmt_out = $db->prepare("SELECT remote_id as id, content, media_url, reply_to, created_at as timestamp 
                               FROM timeline WHERE is_local = 1 ORDER BY created_at DESC LIMIT :limit");
     $stmt_out->bindValue(':limit', $config['max_outbox'], PDO::PARAM_INT);
     $stmt_out->execute();
     $my_posts = $stmt_out->fetchAll(PDO::FETCH_ASSOC);
 
+    // Broadcast our Public Key to the network
     $nano_pub_feed = [
-        "protocol"     => "Nano-Pub v1.0",
+        "protocol"     => "Nano-Pub",
         "author"       => $config['node_name'],
         "domain"       => $config['node_url'],
+        "public_key"   => $config['public_key'],
         "last_updated" => $now_utc,
         "posts"        => $my_posts
     ];
 
     $json_path = __DIR__ . '/outbox.json';
-    if (file_put_contents($json_path, json_encode($nano_pub_feed, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) === false) {
-        throw new Exception("Failed to write outbox.json.");
-    }
+    file_put_contents($json_path, json_encode($nano_pub_feed, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
     header("Location: index.php?status=success");
     exit;
