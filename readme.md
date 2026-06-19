@@ -1,5 +1,5 @@
 # > DEADDROP_ 🏴‍☠️
-**The Tor-Native Asynchronous Social Protocol (Nano-Pub) // v3.0**
+**The Tor-Native Asynchronous Social Protocol (Nano-Pub)**
 
 ![DeadDrop Logo](https://img.shields.io/badge/Status-Underground-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
 ![PHP](https://img.shields.io/badge/PHP-FastCGI-777BB4?style=for-the-badge&logo=php)
