@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR
+// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v3.0 - PoW Ready)
 // ==========================================
 require_once 'db.php';
 
@@ -9,7 +9,7 @@ $status_msg = '';
 $status_class = '';
 
 // ==========================================
-// ⚙️ HANDLER: FOLLOW / UNFOLLOW NODE
+// ⚙️ HANDLER: FOLLOW, UNFOLLOW, OR PING NODE
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $input_pass = $_POST['admin_pass'] ?? '';
@@ -20,9 +20,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $status_class = "danger";
     } else {
         $action = $_POST['action'];
-        $target_url = rtrim($_POST['target_url'], '/'); // Remove trailing slash
+        $target_url = rtrim($_POST['target_url'], '/'); 
         
-        // Extreme Validation: Only allow .onion (and localhost for testing)
         $parsed_url = parse_url($target_url);
         $host_domain = $parsed_url['host'] ?? '';
         
@@ -40,6 +39,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $stmt->execute([':url' => $target_url]);
                 $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
                 $status_class = "warning";
+            } elseif ($action === 'ping_node') {
+                // 🛡️ PHASE 3: Hashcash Mining Engine
+                $my_url = rtrim($config['node_url'], '/');
+                $timestamp = time();
+                $nonce = 0;
+                $difficulty = '0000';
+                
+                // Start mining process...
+                while (true) {
+                    $hash = hash('sha256', $my_url . $timestamp . $nonce);
+                    if (substr($hash, 0, strlen($difficulty)) === $difficulty) {
+                        break;
+                    }
+                    $nonce++;
+                }
+
+                // Fire the validated PoW via cURL
+                $target_ping_url = $target_url . '/ping.php';
+                $ch = curl_init($target_ping_url);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, [
+                    'source_url' => $my_url,
+                    'timestamp'  => $timestamp,
+                    'nonce'      => $nonce
+                ]);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+                
+                if (preg_match('/\.onion$/i', $host_domain)) {
+                    curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
+                    curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+                }
+                
+                $response = curl_exec($ch);
+                $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                
+                if ($http_code == 202) {
+                    $status_msg = "[+] SIGNAL TRANSMITTED (Nonce: $nonce): " . htmlspecialchars($response);
+                    $status_class = "success";
+                } else {
+                    $status_msg = "[!] PING FAILED (HTTP $http_code): " . htmlspecialchars($response);
+                    $status_class = "danger";
+                }
             }
         }
     }
@@ -49,15 +92,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 // 📡 FETCH LOCAL CACHED PROFILE DATA
 // ==========================================
 try {
-    // Fetch data strictly from the selected host
     $stmt = $db->prepare("SELECT * FROM timeline WHERE author_host = :host ORDER BY created_at DESC LIMIT 100");
     $stmt->execute([':host' => $target_host]);
     $feeds = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     $profile_name = (!empty($feeds)) ? $feeds[0]['author_name'] : "Unknown Entity";
-    $is_local_profile = ($target_host === $config['node_url']);
+    $is_local_profile = ($target_host === rtrim($config['node_url'], '/'));
     
-    // Check if this host is already in the following table
     $is_following = false;
     if (!$is_local_profile) {
         $stmt_cek = $db->prepare("SELECT COUNT(*) FROM following WHERE onion_url = :host");
@@ -79,7 +120,6 @@ try {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#110818">
     <title>DeadDrop // Inspect Node</title>
-    <meta name="description" content="DeadDrop: The Tor-Native Asynchronous Social Protocol (Nano-Pub). An extreme, zero-push, and JavaScript-free decentralized social syndication platform for the Darknet ecosystem." />
     <link href="assets/torminal.css" rel="stylesheet" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
@@ -127,6 +167,14 @@ try {
                     <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
                     <button type="submit" class="t-btn warning m-0">[ SYNC NODE ]</button>
                 <?php endif; ?>
+            </form>
+            
+            <form action="" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                <input type="hidden" name="target_url" value="<?= htmlspecialchars($target_host) ?>">
+                <input type="hidden" name="action" value="ping_node">
+                <span class="text-muted fs-small flex-fill">Manually knock on their door (Solves PoW puzzle before sending).</span>
+                <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
+                <button type="submit" class="t-btn outline m-0" onclick="this.innerHTML='MINING...';">[ KNOCK / PING ]</button>
             </form>
         </div>
     <?php endif; ?>

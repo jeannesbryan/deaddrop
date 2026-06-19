@@ -1,12 +1,13 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE HOLOGRAM
+// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v2.0 - TTL & Tombstone)
 // ==========================================
 require_once 'db.php';
 
 $status_msg = '';
-if (isset($_GET['status']) && $_GET['status'] === 'success') {
-    $status_msg = "TRANSMISSION SUCCESSFULLY BROADCASTED TO OUTBOX.JSON";
+if (isset($_GET['status'])) {
+    if ($_GET['status'] === 'success') $status_msg = "TRANSMISSION SUCCESSFULLY BROADCASTED TO OUTBOX.JSON";
+    if ($_GET['status'] === 'destroyed') $status_msg = "TOMBSTONE PROTOCOL ENGAGED: SIGNAL DESTROYED";
 }
 
 try {
@@ -34,7 +35,7 @@ function get_parent_post($db, $reply_to_id) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#110818">
     <title>DeadDrop // Network Node</title>
-    <meta name="description" content="DeadDrop: The Tor-Native Asynchronous Social Protocol (Nano-Pub). An extreme, zero-push, and JavaScript-free decentralized social syndication platform for the Darknet ecosystem.">
+    <meta name="description" content="DeadDrop: The Tor-Native Asynchronous Social Protocol (Nano-Pub).">
     <link href="assets/torminal.css" rel="stylesheet" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
@@ -45,7 +46,6 @@ function get_parent_post($db, $reply_to_id) {
         .post-card.local-node { border-left-width: 4px; border-left-color: var(--t-green); }  
         .media-attachment { display: block; max-width: 100%; max-height: 400px; border: 1px dashed var(--t-green-dim); margin-top: 10px; filter: grayscale(80%) sepia(100%) hue-rotate(80deg) brightness(0.8) contrast(1.2); transition: 0.3s; }
         .media-attachment:hover { filter: none; border-color: var(--t-green); }
-        /* Special Styles for Threads (Quoted Reply) */
         .thread-quote { background: rgba(0, 255, 102, 0.05); border-left: 2px dashed var(--t-green-dim); padding: 8px 12px; margin-bottom: 12px; font-size: 0.85rem; color: var(--t-green-dim); }
         .thread-quote .quote-author { font-weight: bold; color: var(--t-green); margin-bottom: 4px; display: block; }
     </style>
@@ -63,8 +63,14 @@ function get_parent_post($db, $reply_to_id) {
         <a href="../index.php" class="t-btn">⇐ Back</a>
     </div>
 
+    <!-- PHASE 1: Navigation UI -->
+    <div class="d-flex gap-2 mb-4">
+        <a href="index.php" class="t-btn" style="background: var(--t-green); color: black;">[ TIMELINE ]</a>
+        <a href="dm.php" class="t-btn outline">[ INBOX ]</a>
+    </div>
+
     <?php if (!empty($status_msg)): ?>
-        <div class="t-alert success mb-4">[+] SUCCESS: <?= $status_msg ?></div>
+        <div class="t-alert success mb-4">[+] <?= $status_msg ?></div>
     <?php endif; ?>
 
     <div class="t-card mb-5">
@@ -73,8 +79,17 @@ function get_parent_post($db, $reply_to_id) {
             <textarea name="content" class="t-textarea mb-2" placeholder="Type your speculations or thought logs here..." required></textarea>
             
             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-                <input type="text" name="target_onion" class="t-input w-auto flex-fill m-0" placeholder="Target .onion for E2EE (Optional)">
+                <input type="text" name="target" class="t-input w-auto flex-fill m-0" placeholder="Target .onion or @alias (E2EE)">
                 <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0" placeholder="Reply to Post ID (Optional)">
+                
+                <!-- PHASE 2: Ephemeral Drop Selection -->
+                <select name="ttl" class="t-input w-auto m-0" style="font-size: 0.8rem;">
+                    <option value="0">TTL: Forever</option>
+                    <option value="1">TTL: 1 Hour</option>
+                    <option value="24">TTL: 24 Hours</option>
+                    <option value="168">TTL: 7 Days</option>
+                </select>
+
                 <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0" style="font-size: 0.8rem;">
             </div>
 
@@ -95,14 +110,29 @@ function get_parent_post($db, $reply_to_id) {
             </div>
         <?php else: ?>
             <?php foreach ($feeds as $post): ?>
-                <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none;">
+                <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none; <?= ($post['status'] === 'deleted') ? 'opacity: 0.6;' : '' ?>">
                     <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
                         <div>
                             <a href="profile.php?host=<?= urlencode($post['author_host']) ?>" class="t-badge outline" style="text-decoration: none; font-weight: bold;">
                                 <?= htmlspecialchars($post['author_name']) ?>
                             </a>
                         </div>
-                        <div class="text-muted">ID: <?= htmlspecialchars($post['remote_id']) ?></div>
+                        
+                        <!-- PHASE 2: Tombstone Delete UI -->
+                        <div class="text-muted d-flex align-items-center gap-2">
+                            <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
+                            <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
+                                <form action="delete.php" method="POST" class="m-0 p-0" style="display:inline;" onsubmit="return confirm('Initiate Global Tombstone Protocol? This will destroy the signal across all synced nodes.');">
+                                    <input type="hidden" name="remote_id" value="<?= htmlspecialchars($post['remote_id']) ?>">
+                                    <input type="password" name="admin_pass" placeholder="Key" class="t-input m-0" style="width:60px; padding:0 4px; font-size:10px; height:20px; display:inline-block;" required>
+                                    <button type="submit" class="t-badge outline danger m-0" style="border:none; cursor:pointer; padding:2px;">[ DEL ]</button>
+                                </form>
+                            <?php endif; ?>
+                            <?php if (!empty($post['expires_at'])): ?>
+                                <span class="t-badge outline warning" style="border:none;">[ ⏳ Ephemeral ]</span>
+                            <?php endif; ?>
+                        </div>
+
                     </div>
                     
                     <?php 

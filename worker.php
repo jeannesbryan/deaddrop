@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v1.0 - E2EE Ready)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v3.0 - TTL & Tombstone)
 // ==========================================
 require_once 'db.php';
 
@@ -12,13 +12,31 @@ echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
 
 try {
-    $target_urls = [];
+    $now_utc = gmdate('Y-m-d\TH:i:s\Z');
 
-    $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
-    foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) {
-        $target_urls[] = $p['source_url'];
+    // ⏳ PHASE 2: EPHEMERAL SWEEPER (TTL Garbage Collection)
+    echo "[>] Running Ephemeral Sweeper...\n";
+    $stmt_exp = $db->query("
+        SELECT media_url, remote_id FROM timeline WHERE expires_at IS NOT NULL AND expires_at <= '$now_utc'
+        UNION ALL
+        SELECT media_url, remote_id FROM inbox WHERE expires_at IS NOT NULL AND expires_at <= '$now_utc'
+    ");
+    $expired_count = 0;
+    foreach ($stmt_exp->fetchAll(PDO::FETCH_ASSOC) as $exp) {
+        if (!empty($exp['media_url'])) {
+            @unlink(__DIR__ . '/media/' . basename($exp['media_url']));
+        }
+        $db->exec("DELETE FROM timeline WHERE remote_id = '{$exp['remote_id']}'");
+        $db->exec("DELETE FROM inbox WHERE remote_id = '{$exp['remote_id']}'");
+        $expired_count++;
     }
+    if ($expired_count > 0) echo "    [+] Purged $expired_count expired ephemeral signals.\n\n";
 
+    // --- STANDARD ROUTING LOGIC ---
+    $target_urls = [];
+    $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
+    foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) $target_urls[] = $p['source_url'];
+    
     $stmt_follow = $db->query("SELECT onion_url FROM following");
     foreach ($stmt_follow->fetchAll(PDO::FETCH_ASSOC) as $f) {
         if (!in_array($f['onion_url'], $target_urls)) $target_urls[] = $f['onion_url'];
@@ -26,10 +44,8 @@ try {
 
     if (empty($target_urls)) die("[*] Radar and Queue are empty. Going back to sleep...\n");
 
-    // Reconstruct Libsodium Keypair for Decryption
     $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
-        base64_decode($config['private_key']), 
-        base64_decode($config['public_key'])
+        base64_decode($config['private_key']), base64_decode($config['public_key'])
     );
 
     foreach ($target_urls as $onion_url) {
@@ -38,7 +54,6 @@ try {
         $host_domain = parse_url($onion_url)['host'] ?? '';
 
         echo "[>] Inspecting Node: " . $host_domain . "\n";
-
         $is_onion = preg_match('/\.onion$/i', $host_domain);
         $is_local = ($host_domain === 'localhost' || $host_domain === '127.0.0.1');
 
@@ -47,18 +62,11 @@ try {
         $ch = curl_init($outbox_url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 15); 
-        curl_setopt($ch, CURLOPT_NOPROGRESS, false);
-        curl_setopt($ch, CURLOPT_PROGRESSFUNCTION, function($clientp, $dltotal, $dlnow, $ultotal, $ulnow) {
-            if ($dltotal > 2097152 || $dlnow > 2097152) return 1; 
-            return 0;
-        });
-
+        curl_setopt($ch, CURLOPT_TIMEOUT, 15);
         if ($is_onion) {
             curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
             curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
         }
-
         $json_response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
@@ -68,7 +76,6 @@ try {
         $feed = json_decode($json_response, true);
         if (!$feed || !isset($feed['posts'])) continue;
 
-        // 🔐 PHASE 1 E2EE: Capture and Update Target's Public Key
         $remote_pub_key = $feed['public_key'] ?? null;
         if ($remote_pub_key) {
             $stmt_key = $db->prepare("UPDATE following SET public_key = :pub WHERE onion_url = :url");
@@ -79,9 +86,8 @@ try {
         $author_domain = rtrim($feed['domain'] ?? $onion_url, '/');
         $new_posts_count = 0;
 
-        $stmt_check = $db->prepare("SELECT COUNT(*) FROM timeline WHERE remote_id = :rid");
-        $stmt_insert = $db->prepare("INSERT INTO timeline (remote_id, author_name, author_host, content, media_url, is_local, reply_to, created_at) 
-                                     VALUES (:rid, :name, :host, :content, :media, 0, :reply, :waktu)");
+        $check_timeline = $db->prepare("SELECT COUNT(*) FROM timeline WHERE remote_id = :rid");
+        $check_inbox = $db->prepare("SELECT COUNT(*) FROM inbox WHERE remote_id = :rid");
 
         $posts_reversed = array_reverse($feed['posts']);
 
@@ -89,24 +95,48 @@ try {
             $remote_id = $post['id'] ?? null;
             if (!$remote_id) continue;
 
-            $stmt_check->execute([':rid' => $remote_id]);
-            if ($stmt_check->fetchColumn() == 0) {
+            $remote_status = $post['status'] ?? 'active';
+
+            // 🪦 PHASE 2: TOMBSTONE GLOBAL DELETE PROTOCOL
+            if ($remote_status === 'deleted') {
+                // Destroy local copies and media if remote author requested deletion
+                $stmt_del_media = $db->prepare("SELECT media_url FROM timeline WHERE remote_id = :rid UNION SELECT media_url FROM inbox WHERE remote_id = :rid");
+                $stmt_del_media->execute([':rid' => $remote_id]);
+                $del_media = $stmt_del_media->fetchColumn();
                 
-                // 🔐 PHASE 1 E2EE: Decryption Protocol
+                if ($del_media) @unlink(__DIR__ . '/media/' . basename($del_media));
+                
+                $db->exec("DELETE FROM timeline WHERE remote_id = '$remote_id'");
+                $db->exec("DELETE FROM inbox WHERE remote_id = '$remote_id'");
+                continue;
+            }
+
+            $check_timeline->execute([':rid' => $remote_id]);
+            $check_inbox->execute([':rid' => $remote_id]);
+
+            if ($check_timeline->fetchColumn() == 0 && $check_inbox->fetchColumn() == 0) {
                 $raw_content = $post['content'] ?? '';
+                $is_decrypted_successfully = false;
+
                 if (strpos($raw_content, 'E2EE:') === 0) {
                     $ciphertext = base64_decode(substr($raw_content, 5));
                     $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
-                    
                     if ($decrypted !== false) {
                         $raw_content = "[🔓 DECRYPTED PRIVATE DROP]\n" . $decrypted;
+                        $is_decrypted_successfully = true; 
                     } else {
-                        $raw_content = "[🔒 ENCRYPTED CIPHERTEXT] // This message is securely locked for another node.";
+                        $raw_content = "[🔒 ENCRYPTED CIPHERTEXT] // This message is securely locked.";
                     }
                 }
 
                 $safe_media = $post['media_url'] ?? null;
                 if ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) $safe_media = null;
+
+                $target_table = $is_decrypted_successfully ? 'inbox' : 'timeline';
+                $expires_at = $post['expires_at'] ?? null;
+                
+                $stmt_insert = $db->prepare("INSERT INTO $target_table (remote_id, author_name, author_host, content, media_url, is_local, reply_to, status, expires_at, created_at) 
+                                             VALUES (:rid, :name, :host, :content, :media, 0, :reply, 'active', :expires, :waktu)");
 
                 $stmt_insert->execute([
                     ':rid'     => $remote_id,
@@ -115,7 +145,8 @@ try {
                     ':content' => $raw_content,
                     ':media'   => $safe_media,
                     ':reply'   => $post['reply_to'] ?? null,
-                    ':waktu'   => $post['timestamp'] ?? gmdate('Y-m-d\TH:i:s\Z')
+                    ':expires' => $expires_at,
+                    ':waktu'   => $post['timestamp'] ?? $now_utc
                 ]);
                 $new_posts_count++;
             }

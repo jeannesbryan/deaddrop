@@ -5,14 +5,9 @@
 
 // ⚙️ 1. NODE CONFIGURATION (For Open Source Release)
 $config = [
-    'node_name'   => 'Anonymous Node', // [!] CHANGE THIS: Your Darknet Alias
-    'node_url'    => 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.onion', // [!] CHANGE THIS: Your actual .onion URL
-    
-    // [!] CHANGE THIS: Use BCRYPT HASH, NEVER use plain text!
-    // To generate a new hash, run this command in your Debian/Armbian terminal:
-    // php -r "echo password_hash('YOUR_NEW_PASSWORD', PASSWORD_DEFAULT) . PHP_EOL;"
-    'admin_hash'  => '$2y$10$YourGeneratedBcryptHashGoesHere...', 
-    
+    'node_name'   => 'YOUR_NODE_NAME_HERE', // Change this to your desired node name
+    'node_url'    => 'http://your_v3_onion_address_here.onion', // Your Tor Hidden Service URL
+    'admin_hash'  => 'YOUR_BCRYPT_HASH_HERE', // Generate using password_hash('your_password', PASSWORD_BCRYPT)
     'max_outbox'  => 50,
     'db_path'     => __DIR__ . '/data/deaddrop.sqlite'
 ];
@@ -27,7 +22,6 @@ try {
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->setAttribute(PDO::ATTR_TIMEOUT, 5); 
 
-    // Performance optimization for low-end hardware (STB / Raspberry Pi)
     $db->exec("PRAGMA journal_mode = WAL;");
     $db->exec("PRAGMA synchronous = NORMAL;");
     $db->exec("PRAGMA busy_timeout = 3000;");
@@ -41,7 +35,23 @@ try {
         content TEXT,                 
         media_url TEXT,               
         is_local INTEGER DEFAULT 0,   
-        reply_to TEXT,                
+        reply_to TEXT,
+        status TEXT DEFAULT 'active',
+        expires_at DATETIME DEFAULT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )");
+
+    $db->exec("CREATE TABLE IF NOT EXISTS inbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        remote_id TEXT UNIQUE,        
+        author_name TEXT,             
+        author_host TEXT,             
+        content TEXT,                 
+        media_url TEXT,               
+        is_local INTEGER DEFAULT 0,   
+        reply_to TEXT,
+        status TEXT DEFAULT 'active',
+        expires_at DATETIME DEFAULT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )");
 
@@ -49,6 +59,7 @@ try {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         onion_url TEXT UNIQUE,
         alias TEXT,
+        public_key TEXT DEFAULT NULL,
         last_pulled DATETIME
     )");
 
@@ -58,26 +69,23 @@ try {
         received_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )");
 
-    // 🔐 PHASE 1 E2EE: Create Identity Table for Libsodium Keys
     $db->exec("CREATE TABLE IF NOT EXISTS node_identity (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         public_key TEXT,
         private_key TEXT
     )");
 
-    // Add public_key column to following table safely
-    try {
-        $db->exec("ALTER TABLE following ADD COLUMN public_key TEXT DEFAULT NULL");
-    } catch (PDOException $e) {
-        // Column already exists, ignore
-    }
+    // PHASE 2: Safe Migrations for existing DB
+    try { $db->exec("ALTER TABLE timeline ADD COLUMN status TEXT DEFAULT 'active'"); } catch (Exception $e) {}
+    try { $db->exec("ALTER TABLE timeline ADD COLUMN expires_at DATETIME DEFAULT NULL"); } catch (Exception $e) {}
+    try { $db->exec("ALTER TABLE inbox ADD COLUMN status TEXT DEFAULT 'active'"); } catch (Exception $e) {}
+    try { $db->exec("ALTER TABLE inbox ADD COLUMN expires_at DATETIME DEFAULT NULL"); } catch (Exception $e) {}
 
     // 🧬 GENERATE LIBSODIUM KEYPAIR IF NOT EXISTS
     $stmt = $db->query("SELECT public_key, private_key FROM node_identity WHERE id = 1");
     $keys = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$keys) {
-        // Create new sealed boxes
         $keypair = sodium_crypto_box_keypair();
         $public_key = base64_encode(sodium_crypto_box_publickey($keypair));
         $private_key = base64_encode(sodium_crypto_box_secretkey($keypair));
@@ -93,7 +101,7 @@ try {
     }
 
 } catch (PDOException $e) {
-    die("<h3 style='color:red; font-family:monospace;'>[ DEADDROP CORE ERROR ]<br>Database failure: " . $e->getMessage() . "</h3>");
+    die("<h3 style='color:red; font-family:monospace;'>[ DEADDROP CORE ERROR ]<br>Database failure.</h3>");
 }
 
 function generate_local_id() {
