@@ -35,8 +35,10 @@ DeadDrop is designed for extreme efficiency and can run on headless Linux enviro
 First, update your system and install the required packages (including `nano` for editing).
 ```bash
 apt update && apt upgrade -y
-apt install nano nginx php-fpm php-sqlite3 php-sodium php-curl sqlite3 tor curl libimage-exiftool-perl git -y
+apt install nano nginx php-fpm php-sqlite3 php-curl sqlite3 tor curl libimage-exiftool-perl git -y
 ```
+
+*Note: Libsodium (E2EE cryptography) is required by DeadDrop but is already compiled directly into the PHP core for versions 7.2 and above, so no separate package is needed.*
 
 *Note: If your hosting provider pre-installed `apache2`, it will conflict with Nginx. Kill it permanently by running:*
 ```bash
@@ -108,24 +110,24 @@ sudo cat /var/lib/tor/hidden_service/hostname
 If you already possess a custom vanity `.onion` domain, **do not** let Tor run the randomly generated address. Follow these strict intervention steps to swap the cryptographical keys safely without system conflicts:
 
 1. **Stop the Tor daemon completely:**
-   ```bash
+```bash
    sudo systemctl stop tor
    ```
 2. **Eradicate the randomly generated default keys:**
-   ```bash
+```bash
    sudo rm -rf /var/lib/tor/hidden_service/*
    ```
 3. **Inject your custom keys:**
    A custom Tor v3 domain always consists of three crucial files: `hostname`, `hs_ed25519_public_key`, and the highly sensitive `hs_ed25519_secret_key`. Move all three files directly into `/var/lib/tor/hidden_service/`.
 4. **Restore strict system ownership and permissions:**
    Tor will aggressively refuse to boot if security permissions are loose. Execute these exact commands:
-   ```bash
+```bash
    sudo chown -R debian-tor:debian-tor /var/lib/tor/hidden_service/
    sudo chmod 700 /var/lib/tor/hidden_service/
    sudo chmod 600 /var/lib/tor/hidden_service/hs_ed25519_secret_key
    ```
 5. **Ignite Tor and verify propagation:**
-   ```bash
+```bash
    sudo systemctl start tor
    sudo systemctl status tor
    ```
@@ -137,7 +139,7 @@ If you already possess a custom vanity `.onion` domain, **do not** let Tor run t
 
 Pull the DeadDrop codebase directly into the subfolder and apply correct web server permissions:
 ```bash
-git clone https://github.com/jeannesbryan/deaddrop.git /var/www/html/deaddrop
+git clone [https://github.com/jeannesbryan/deaddrop.git](https://github.com/jeannesbryan/deaddrop.git) /var/www/html/deaddrop
 chown -R www-data:www-data /var/www/html/deaddrop
 chmod -R 775 /var/www/html/deaddrop
 ```
@@ -201,6 +203,24 @@ Paste these two target lines at the bottom to maintain syndication workers and c
 ```
 
 **Congratulations. Your Sovereign Node is now fully autonomous in the darknet.**
+
+---
+
+### 📡 HOW TO FOLLOW OTHER NODES (SYNDICATION)
+To subscribe to another peer's timeline, you must supply your background worker with their exact, fully-qualified subfolder endpoint via the home command center.
+
+**Strict Radar Syntax:**
+1. **Protocol Required:** Must explicitly begin with `http://`.
+2. **Subfolder Termination:** If the peer deployed DeadDrop inside a subfolder (the standardized default), the target URL must terminate with `/deaddrop`.
+
+*Example of a valid peer target:*
+```text
+http://peer_onion_address_here.onion/deaddrop
+```
+
+#### ⚠️ CRITICAL OPSEC RULE: PETNAME UNIQUENESS
+When assigning a Petname (`@alias`) to a peer via the home dashboard, **you must ensure the alias is 100% unique to your local radar**. 
+> **The Duplicate Alias Trap:** If you assign the exact same Petname (e.g., `@target`) to two different `.onion` endpoints, SQLite will quietly permit it. However, when you attempt to transmit an E2EE Burner DM to `@target`, the Libsodium encryption engine will strictly lock onto the Public Key of the *first* node registered under that name. **Your highly sensitive DM will be encrypted for and readable by the wrong server.** Never reuse petnames.
 
 ---
 

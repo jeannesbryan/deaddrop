@@ -5,16 +5,88 @@
 require_once 'db.php';
 
 $status_msg = '';
+$alert_type = 'success';
+
+// ==========================================
+// ⚙️ HANDLER: ADD OR REMOVE PEER FROM RADAR
+// ==========================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $input_pass = $_POST['admin_pass'] ?? '';
+    if (!password_verify($input_pass, $config['admin_hash'])) {
+        sleep(1);
+        $status_msg = "[!] ACCESS DENIED: Invalid Secure Key.";
+        $alert_type = 'danger';
+    } else {
+        // TANGKAP AKSI TAMBAH TEMAN
+        if ($_POST['action'] === 'add_peer') {
+            $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+            $raw_alias = trim($_POST['peer_alias'] ?? '');
+            
+            // Sanitasi Alias: Buang simbol @ jika user iseng ngetik, sisakan alfanumerik
+            $alias = ltrim($raw_alias, '@');
+            $alias = preg_replace('/[^a-zA-Z0-9_-]/', '', $alias);
+            if (empty($alias)) $alias = $peer_url;
+
+            // Validasi Darknet & Format URL
+            $parsed_url = parse_url($peer_url);
+            $host_domain = $parsed_url['host'] ?? '';
+
+            if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
+                $status_msg = "[!] PROTOCOL REJECTED: Only external Darknet (.onion) endpoints are allowed.";
+                $alert_type = 'danger';
+            } else {
+                try {
+                    $stmt = $db->prepare("INSERT INTO following (onion_url, alias) VALUES (:url, :alias)");
+                    $stmt->execute([':url' => $peer_url, ':alias' => $alias]);
+                    header("Location: index.php?status=peer_added&alias=" . urlencode($alias));
+                    exit;
+                } catch (PDOException $e) {
+                    $status_msg = "[!] ERROR: Node is already in your radar or alias already exists.";
+                    $alert_type = 'danger';
+                }
+            }
+        }
+        
+        // TANGKAP AKSI PUTUS PERTEMANAN (UNFOLLOW)
+        elseif ($_POST['action'] === 'unfollow_peer') {
+            $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+            try {
+                $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url");
+                $stmt->execute([':url' => $peer_url]);
+                header("Location: index.php?status=peer_removed");
+                exit;
+            } catch (PDOException $e) {
+                $status_msg = "[!] ERROR: Failed to remove peer from radar.";
+                $alert_type = 'danger';
+            }
+        }
+    }
+}
+
+// ==========================================
+// 📡 MENGAMBIL NOTIFIKASI STATUS & DATA
+// ==========================================
 if (isset($_GET['status'])) {
-    if ($_GET['status'] === 'success') $status_msg = "TRANSMISSION SUCCESSFULLY BROADCASTED TO OUTBOX.JSON";
-    if ($_GET['status'] === 'destroyed') $status_msg = "TOMBSTONE PROTOCOL ENGAGED: SIGNAL DESTROYED";
+    if ($_GET['status'] === 'success') $status_msg = "[+] TRANSMISSION SUCCESSFULLY BROADCASTED TO OUTBOX.JSON";
+    if ($_GET['status'] === 'destroyed') $status_msg = "[+] TOMBSTONE PROTOCOL ENGAGED: SIGNAL DESTROYED";
+    if ($_GET['status'] === 'peer_added') $status_msg = "[+] RADAR LOCKED: Successfully tracking petname @" . htmlspecialchars($_GET['alias'] ?? 'peer');
+    if ($_GET['status'] === 'peer_removed') {
+        $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
+        $alert_type = 'warning';
+    }
 }
 
 try {
+    // Ambil Timeline
     $query = $db->query("SELECT * FROM timeline ORDER BY created_at DESC LIMIT 100");
     $feeds = $query->fetchAll(PDO::FETCH_ASSOC);
+    
+    // Ambil Daftar Teman (Radar)
+    $query_following = $db->query("SELECT * FROM following ORDER BY id DESC");
+    $following_list = $query_following->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     $feeds = [];
+    $following_list = [];
 }
 
 // Lightweight function to fetch Parent Post
@@ -63,17 +135,16 @@ function get_parent_post($db, $reply_to_id) {
         <a href="../index.php" class="t-btn">⇐ Back</a>
     </div>
 
-    <!-- PHASE 1: Navigation UI -->
     <div class="d-flex gap-2 mb-4">
         <a href="index.php" class="t-btn" style="background: var(--t-green); color: black;">[ TIMELINE ]</a>
         <a href="dm.php" class="t-btn outline">[ INBOX ]</a>
     </div>
 
     <?php if (!empty($status_msg)): ?>
-        <div class="t-alert success mb-4">[+] <?= $status_msg ?></div>
+        <div class="t-alert <?= $alert_type ?> mb-4"><?= $status_msg ?></div>
     <?php endif; ?>
 
-    <div class="t-card mb-5">
+    <div class="t-card mb-4">
         <div class="font-bold mb-3" style="color: var(--t-green);">[ Broadcast Station ]</div>
         <form action="publish.php" method="POST" enctype="multipart/form-data">
             <textarea name="content" class="t-textarea mb-2" placeholder="Type your speculations or thought logs here..." required></textarea>
@@ -82,7 +153,6 @@ function get_parent_post($db, $reply_to_id) {
                 <input type="text" name="target" class="t-input w-auto flex-fill m-0" placeholder="Target .onion or @alias (E2EE)">
                 <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0" placeholder="Reply to Post ID (Optional)">
                 
-                <!-- PHASE 2: Ephemeral Drop Selection -->
                 <select name="ttl" class="t-input w-auto m-0" style="font-size: 0.8rem;">
                     <option value="0">TTL: Forever</option>
                     <option value="1">TTL: 1 Hour</option>
@@ -98,6 +168,47 @@ function get_parent_post($db, $reply_to_id) {
                 <button type="submit" class="t-btn m-0">TRANSMIT</button>
             </div>
         </form>
+    </div>
+
+    <div class="t-card mb-5" style="border-style: dashed; border-color: var(--t-green-dim);">
+        <div class="font-bold mb-3 d-flex justify-content-between align-items-center" style="color: var(--t-green);">
+            <span>[ Radar Synchronizer // Node Management ]</span>
+            <span class="fs-small text-muted">Nano-Pub Protocol</span>
+        </div>
+        
+        <form action="index.php" method="POST">
+            <input type="hidden" name="action" value="add_peer">
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                <input type="text" name="peer_url" class="t-input flex-fill m-0" placeholder="Endpoint URL (e.g. http://peer.onion/deaddrop)" required style="min-width: 250px;">
+                <input type="text" name="peer_alias" class="t-input w-auto m-0" placeholder="Petname (e.g. target)" required style="max-width: 150px;">
+            </div>
+            <div class="d-flex gap-2">
+                <input type="password" name="admin_pass" class="t-input flex-fill m-0" placeholder="Secure Key" required>
+                <button type="submit" class="t-btn m-0 outline warning">[ LOCK RADAR ]</button>
+            </div>
+        </form>
+
+        <?php if (!empty($following_list)): ?>
+        <div class="mt-4 pt-3" style="border-top: 1px dashed var(--t-green-dim);">
+            <div class="font-bold mb-3 fs-small text-muted" style="text-transform: uppercase;">[ Active Radar Targets ]</div>
+            
+            <?php foreach ($following_list as $peer): ?>
+                <div class="d-flex justify-content-between align-items-center mb-2 pb-2" style="border-bottom: 1px dotted rgba(0,255,65,0.2);">
+                    <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%;">
+                        <span class="t-glow font-bold text-success">@<?= htmlspecialchars($peer['alias']) ?></span><br>
+                        <span class="fs-small text-muted" style="font-size: 11px;"><?= htmlspecialchars($peer['onion_url']) ?></span>
+                    </div>
+                    <form action="index.php" method="POST" class="m-0 d-flex gap-2 align-items-center" onsubmit="return confirm('Disconnect from @<?= htmlspecialchars($peer['alias']) ?>? Your timeline will stop receiving their updates.');">
+                        <input type="hidden" name="action" value="unfollow_peer">
+                        <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
+                        <input type="password" name="admin_pass" class="t-input m-0" placeholder="Key" style="width: 65px; padding: 2px 4px; height: 26px; font-size: 11px;" required>
+                        <button type="submit" class="t-badge outline danger m-0" style="height: 26px; padding: 0 6px; border: none; cursor: pointer;">[ DEL ]</button>
+                    </form>
+                </div>
+            <?php endforeach; ?>
+            
+        </div>
+        <?php endif; ?>
     </div>
 
     <main>
@@ -118,7 +229,6 @@ function get_parent_post($db, $reply_to_id) {
                             </a>
                         </div>
                         
-                        <!-- PHASE 2: Tombstone Delete UI -->
                         <div class="text-muted d-flex align-items-center gap-2">
                             <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
                             <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
