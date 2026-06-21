@@ -36,6 +36,7 @@ if ($ttl_hours > 0) {
 // 🔐 PHASE 1 E2EE: PURE TOR PETNAME & ENCRYPTION
 $target = trim(strip_tags($_POST['target'] ?? ''));
 $is_e2ee = false;
+$is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1'); // Deteksi Burner
 
 if (!empty($target)) {
     $is_e2ee = true;
@@ -54,7 +55,10 @@ if (!empty($target)) {
 
     $binary_target_pub = base64_decode($target_pub_key);
     $encrypted_binary = sodium_crypto_box_seal($content, $binary_target_pub);
-    $content = 'E2EE:' . base64_encode($encrypted_binary);
+    
+    // Injeksi tag Burner di ciphertext
+    $prefix = $is_burner ? 'E2EE-BURNER:' : 'E2EE:';
+    $content = $prefix . base64_encode($encrypted_binary);
 }
 
 // 3. CAPTURE & PROCESS MEDIA

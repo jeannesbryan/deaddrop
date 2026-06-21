@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v3.0 - TTL & Tombstone)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v5.0 Final - Mutual & Telegram)
 // ==========================================
 require_once 'db.php';
 
@@ -14,7 +14,6 @@ echo "============================================\n\n";
 try {
     $now_utc = gmdate('Y-m-d\TH:i:s\Z');
 
-    // ⏳ PHASE 2: EPHEMERAL SWEEPER (TTL Garbage Collection)
     echo "[>] Running Ephemeral Sweeper...\n";
     $stmt_exp = $db->query("
         SELECT media_url, remote_id FROM timeline WHERE expires_at IS NOT NULL AND expires_at <= '$now_utc'
@@ -23,16 +22,13 @@ try {
     ");
     $expired_count = 0;
     foreach ($stmt_exp->fetchAll(PDO::FETCH_ASSOC) as $exp) {
-        if (!empty($exp['media_url'])) {
-            @unlink(__DIR__ . '/media/' . basename($exp['media_url']));
-        }
+        if (!empty($exp['media_url'])) @unlink(__DIR__ . '/media/' . basename($exp['media_url']));
         $db->exec("DELETE FROM timeline WHERE remote_id = '{$exp['remote_id']}'");
         $db->exec("DELETE FROM inbox WHERE remote_id = '{$exp['remote_id']}'");
         $expired_count++;
     }
     if ($expired_count > 0) echo "    [+] Purged $expired_count expired ephemeral signals.\n\n";
 
-    // --- STANDARD ROUTING LOGIC ---
     $target_urls = [];
     $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
     foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) $target_urls[] = $p['source_url'];
@@ -76,10 +72,17 @@ try {
         $feed = json_decode($json_response, true);
         if (!$feed || !isset($feed['posts'])) continue;
 
+        // 🤝 MUTUAL BADGE TRACKING
+        $my_clean_url = rtrim($config['node_url'], '/');
+        $is_mutual = (strpos($json_response, $my_clean_url) !== false) ? 1 : 0;
         $remote_pub_key = $feed['public_key'] ?? null;
+
         if ($remote_pub_key) {
-            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub WHERE onion_url = :url");
-            $stmt_key->execute([':pub' => $remote_pub_key, ':url' => $onion_url]);
+            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, is_mutual = :mut WHERE onion_url = :url");
+            $stmt_key->execute([':pub' => $remote_pub_key, ':mut' => $is_mutual, ':url' => $onion_url]);
+        } else {
+            $stmt_key = $db->prepare("UPDATE following SET is_mutual = :mut WHERE onion_url = :url");
+            $stmt_key->execute([':mut' => $is_mutual, ':url' => $onion_url]);
         }
 
         $author_name = $feed['author'] ?? 'Unknown Node';
@@ -97,9 +100,7 @@ try {
 
             $remote_status = $post['status'] ?? 'active';
 
-            // 🪦 PHASE 2: TOMBSTONE GLOBAL DELETE PROTOCOL
             if ($remote_status === 'deleted') {
-                // Destroy local copies and media if remote author requested deletion
                 $stmt_del_media = $db->prepare("SELECT media_url FROM timeline WHERE remote_id = :rid UNION SELECT media_url FROM inbox WHERE remote_id = :rid");
                 $stmt_del_media->execute([':rid' => $remote_id]);
                 $del_media = $stmt_del_media->fetchColumn();
@@ -115,17 +116,39 @@ try {
             $check_inbox->execute([':rid' => $remote_id]);
 
             if ($check_timeline->fetchColumn() == 0 && $check_inbox->fetchColumn() == 0) {
+                
                 $raw_content = $post['content'] ?? '';
                 $is_decrypted_successfully = false;
+                $is_burner_received = false;
 
-                if (strpos($raw_content, 'E2EE:') === 0) {
-                    $ciphertext = base64_decode(substr($raw_content, 5));
+                if (strpos($raw_content, 'E2EE:') === 0 || strpos($raw_content, 'E2EE-BURNER:') === 0) {
+                    $is_burner_received = (strpos($raw_content, 'E2EE-BURNER:') === 0);
+                    $offset = $is_burner_received ? 12 : 5;
+                    $ciphertext = base64_decode(substr($raw_content, $offset));
+                    
                     $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
                     if ($decrypted !== false) {
-                        $raw_content = "[🔓 DECRYPTED PRIVATE DROP]\n" . $decrypted;
+                        $prefix_text = $is_burner_received ? "[🔥 BURNER DROP - DESTROYED UPON READING]\n" : "[🔓 DECRYPTED PRIVATE DROP]\n";
+                        $raw_content = $prefix_text . $decrypted;
                         $is_decrypted_successfully = true; 
+                        
+                        // 📡 TELEGRAM BRIDGE DM TRIGGER
+                        if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
+                            $tipe_pesan = $is_burner_received ? "🔥 BURNER DROP" : "🔓 PRIVATE DROP";
+                            $msg_tg = "INBOX NODE: 1 $tipe_pesan berhasil didekripsi dari @" . $author_name;
+                            
+                            $url_tg = "https://api.telegram.org/bot" . $config['tg_token'] . "/sendMessage";
+                            $chTg = curl_init($url_tg);
+                            curl_setopt($chTg, CURLOPT_RETURNTRANSFER, true);
+                            curl_setopt($chTg, CURLOPT_POST, true);
+                            curl_setopt($chTg, CURLOPT_POSTFIELDS, ['chat_id' => $config['tg_chat'], 'text' => $msg_tg]);
+                            curl_setopt($chTg, CURLOPT_TIMEOUT, 5);
+                            curl_exec($chTg);
+                            curl_close($chTg);
+                        }
                     } else {
                         $raw_content = "[🔒 ENCRYPTED CIPHERTEXT] // This message is securely locked.";
+                        $is_burner_received = false;
                     }
                 }
 
@@ -134,9 +157,10 @@ try {
 
                 $target_table = $is_decrypted_successfully ? 'inbox' : 'timeline';
                 $expires_at = $post['expires_at'] ?? null;
-                
+                $final_status = $is_burner_received ? 'burner' : 'active';
+
                 $stmt_insert = $db->prepare("INSERT INTO $target_table (remote_id, author_name, author_host, content, media_url, is_local, reply_to, status, expires_at, created_at) 
-                                             VALUES (:rid, :name, :host, :content, :media, 0, :reply, 'active', :expires, :waktu)");
+                                             VALUES (:rid, :name, :host, :content, :media, 0, :reply, :stat, :expires, :waktu)");
 
                 $stmt_insert->execute([
                     ':rid'     => $remote_id,
@@ -145,6 +169,7 @@ try {
                     ':content' => $raw_content,
                     ':media'   => $safe_media,
                     ':reply'   => $post['reply_to'] ?? null,
+                    ':stat'    => $final_status,
                     ':expires' => $expires_at,
                     ':waktu'   => $post['timestamp'] ?? $now_utc
                 ]);

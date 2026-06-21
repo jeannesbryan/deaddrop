@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: SECURE INBOX (v2.0 - TTL & Tombstone)
+// 🏴‍☠️ DEADDROP: SECURE INBOX (v5.0 - Burner & Paging)
 // ==========================================
 require_once 'db.php';
 
@@ -10,16 +10,43 @@ if (isset($_GET['status'])) {
     if ($_GET['status'] === 'destroyed') $status_msg = "TOMBSTONE PROTOCOL ENGAGED: SECURE DROP DESTROYED";
 }
 
+// 🧭 STATELESS NANO-PAGING LOGIC
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+if ($page < 1) $page = 1;
+$limit = 100;
+$offset = ($page - 1) * $limit;
+
 try {
-    $query = $db->query("SELECT * FROM inbox ORDER BY created_at DESC LIMIT 100");
+    // Ambil Total Data untuk Kalkulasi Halaman Akhir
+    $total_feeds = $db->query("SELECT COUNT(*) FROM inbox")->fetchColumn();
+    $total_pages = ceil($total_feeds / $limit);
+    if ($total_pages < 1) $total_pages = 1;
+
+    // Ambil Inbox dengan Offset
+    $query = $db->query("SELECT * FROM inbox ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
     $feeds = $query->fetchAll(PDO::FETCH_ASSOC);
+
+    // 🔥 EKSEKUSI BURNER DMs: Hancurkan pesan masuk setelah ditarik
+    $burner_ids = [];
+    foreach ($feeds as $post) {
+        if ($post['status'] === 'burner' && $post['is_local'] == 0) {
+            $burner_ids[] = $post['id'];
+        }
+    }
+    if (!empty($burner_ids)) {
+        $placeholders = implode(',', array_fill(0, count($burner_ids), '?'));
+        $stmt_burn = $db->prepare("DELETE FROM inbox WHERE id IN ($placeholders)");
+        $stmt_burn->execute($burner_ids);
+    }
 } catch (PDOException $e) {
     $feeds = [];
+    $total_pages = 1;
 }
 
+// Lightweight function to fetch Parent Post
 function get_parent_post($db, $reply_to_id) {
     try {
-        $stmt = $db->prepare("SELECT author_name, content FROM inbox WHERE remote_id = :rid LIMIT 1");
+        $stmt = $db->prepare("SELECT author_name, content FROM timeline WHERE remote_id = :rid LIMIT 1");
         $stmt->execute([':rid' => $reply_to_id]);
         return $stmt->fetch(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
@@ -61,10 +88,10 @@ function get_parent_post($db, $reply_to_id) {
         <a href="../index.php" class="t-btn">⇐ Back</a>
     </div>
 
-    <!-- PHASE 1: Navigation UI -->
     <div class="d-flex gap-2 mb-4">
-        <a href="index.php" class="t-btn outline">[ TIMELINE ]</a>
+        <a href="index.php" class="t-btn outline" style="color: var(--t-green); border-color: var(--t-green);">[ TIMELINE ]</a>
         <a href="dm.php" class="t-btn" style="background: #ff0055; color: white; border-color: #ff0055;">[ INBOX ]</a>
+        <a href="radar.php" class="t-btn outline" style="color: var(--t-cyan, #00ffff); border-color: var(--t-cyan, #00ffff);">[ RADAR ]</a>
     </div>
 
     <?php if (!empty($status_msg)): ?>
@@ -78,9 +105,12 @@ function get_parent_post($db, $reply_to_id) {
             
             <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
                 <input type="text" name="target" class="t-input w-auto flex-fill m-0" placeholder="Target @alias is required for E2EE" required style="border-color: #ff0055;">
+				<label class="t-checkbox-label mb-0 t-glow mt-2 w-100" style="color: #ff0055;">
+					<input type="checkbox" name="is_burner" value="1" class="t-toggle-checkbox">
+					<span class="t-checkmark" style="border-color: #ff0055;"></span> [ 🔥 ENGAGE BURNER MODE ]
+				</label>
                 <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0" placeholder="Reply to Post ID (Optional)" style="border-color: #ff0055;">
                 
-                <!-- PHASE 2: Ephemeral Drop Selection -->
                 <select name="ttl" class="t-input w-auto m-0" style="font-size: 0.8rem; border-color: #ff0055;">
                     <option value="0">TTL: Forever</option>
                     <option value="1">TTL: 1 Hour</option>
@@ -104,7 +134,7 @@ function get_parent_post($db, $reply_to_id) {
         <?php if (empty($feeds)): ?>
             <div class="t-empty-state" style="border-color: #ff0055; color: #ff0055;">
                 <span class="t-empty-state-icon">Ø</span>
-                [!] No private transmissions found.
+                [!] No private transmissions found on Page <?= $page ?>.
             </div>
         <?php else: ?>
             <?php foreach ($feeds as $post): ?>
@@ -116,7 +146,6 @@ function get_parent_post($db, $reply_to_id) {
                             </a>
                         </div>
                         
-                        <!-- PHASE 2: Tombstone Delete UI -->
                         <div class="text-muted d-flex align-items-center gap-2">
                             <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
                             <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
@@ -130,7 +159,6 @@ function get_parent_post($db, $reply_to_id) {
                                 <span class="t-badge outline warning" style="border:none;">[ ⏳ Ephemeral ]</span>
                             <?php endif; ?>
                         </div>
-
                     </div>
                     
                     <?php 
@@ -161,8 +189,26 @@ function get_parent_post($db, $reply_to_id) {
                 </div>
             <?php endforeach; ?>
         <?php endif; ?>
+
+        <?php if ($total_pages > 1): ?>
+        <div class="d-flex justify-content-center align-items-center mt-4 pt-3 t-border-top gap-3" style="border-color: rgba(255,0,85,0.2);">
+            <?php if ($page > 1): ?>
+                <a href="?page=<?= $page - 1 ?>" class="t-btn outline" style="color: #ff0055; border-color: #ff0055;">[ ◄ Page <?= $page - 1 ?> ]</a>
+            <?php else: ?>
+                <span class="t-btn outline text-muted" style="border-color: rgba(255,0,85,0.2); cursor: not-allowed;">[ ◄ Page ]</span>
+            <?php endif; ?>
+
+            <span class="font-bold t-glow" style="color: #ff0055;">-- ( Current: <?= $page ?> ) --</span>
+
+            <?php if ($page < $total_pages): ?>
+                <a href="?page=<?= $page + 1 ?>" class="t-btn outline" style="color: #ff0055; border-color: #ff0055;">[ Page <?= $page + 1 ?> ► ]</a>
+            <?php else: ?>
+                <span class="t-btn outline text-muted" style="border-color: rgba(255,0,85,0.2); cursor: not-allowed;">[ Page ► ]</span>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
     </main>
 </div>
-
 </body>
 </html>

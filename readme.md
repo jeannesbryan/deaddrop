@@ -1,5 +1,5 @@
 # > DEADDROP_ 🏴‍☠️
-**The Tor-Native Asynchronous Social Protocol (Nano-Pub) // v4.0**
+**The Tor-Native Asynchronous Social Protocol (Nano-Pub)**
 
 ![DeadDrop Logo](https://img.shields.io/badge/Status-Underground-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
 ![PHP](https://img.shields.io/badge/PHP-FastCGI-777BB4?style=for-the-badge&logo=php)
@@ -20,11 +20,12 @@ Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server commun
 1. **Static-First:** You post to your timeline. The engine generates a highly optimized `outbox.json`. That's it. It costs 0% CPU when visitors read your feed.
 2. **Deferred Interaction:** The timeline is strictly built by a background worker (`worker.php`) running via Cron Job. It silently pulls data from the `.onion` nodes you follow and drops them into your local SQLite database.
 3. **Pure Torminal UI (Mobile Ready):** The frontend is strictly built with HTML and CSS, fully responsive for touch devices. **Zero JavaScript.** It is designed to work flawlessly on Tor Browser's "Safest" mode.
-4. **Darknet Exclusive:** The syndication engine enforcing Tor SOCKS5 proxy (`127.0.0.1:9050`). It actively rejects clearnet domains.
-5. **Isolated E2EE & Petnames:** Asymmetric cryptography using Libsodium. Secure messages are routed to an isolated inbox using human-readable `@alias` routing instead of 56-character `.onion` strings.
-6. **Burner DMs (Zero-JS):** Instantaneous stateless eradication of secure messages upon reading, handled entirely by the PHP backend in the exact millisecond they are rendered, requiring absolutely no frontend timers.
-7. **Ephemeral & Tombstone Protocols:** Built-in Time-to-Live (TTL) sweeper and global delete mechanisms to actively protect the host's eMMC from data bloating.
-8. **Hashcash Perimeter Defense:** Incoming network knocks to the gateway are guarded by a brutal SHA-256 Proof-of-Work puzzle to automatically drop DDoS attempts and botnet spam.
+4. **Isolated Command Center:** Dedicated `radar.php` dashboard for managing network syndication and peers without cluttering the main timeline.
+5. **Stateless Nano-Paging:** Infinite timeline rendering managed entirely by PHP and SQLite `OFFSET`, ensuring browsers never crash from DOM overload.
+6. **Burner DMs & E2EE:** Asymmetric cryptography using Libsodium. Messages flagged as burners are eradicated from the local database in the exact millisecond they are rendered.
+7. **Auto-Scaling Hashcash Defense:** Incoming network knocks to the gateway are guarded by a dynamic SHA-256 Proof-of-Work puzzle. The difficulty scales exponentially during DDoS attempts to burn botnet CPU.
+8. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
+9. **Optional Telegram Bridge:** Built-in silent API triggers to notify your device of new encrypted DMs or valid network knocks.
 
 ---
 
@@ -46,7 +47,7 @@ systemctl stop apache2
 systemctl disable apache2
 ```
 
-To guarantee that Nginx and Tor automatically resurrect whenever your node reboots (e.g., after an unexpected power outage), enforce global autostart immediately:
+To guarantee that Nginx and Tor automatically resurrect whenever your node reboots, enforce global autostart immediately:
 ```bash
 sudo systemctl enable --now nginx tor
 ```
@@ -110,24 +111,24 @@ sudo cat /var/lib/tor/hidden_service/hostname
 If you already possess a custom vanity `.onion` domain, **do not** let Tor run the randomly generated address. Follow these strict intervention steps to swap the cryptographical keys safely without system conflicts:
 
 1. **Stop the Tor daemon completely:**
-```bash
+   ```bash
    sudo systemctl stop tor
    ```
 2. **Eradicate the randomly generated default keys:**
-```bash
+   ```bash
    sudo rm -rf /var/lib/tor/hidden_service/*
    ```
 3. **Inject your custom keys:**
    A custom Tor v3 domain always consists of three crucial files: `hostname`, `hs_ed25519_public_key`, and the highly sensitive `hs_ed25519_secret_key`. Move all three files directly into `/var/lib/tor/hidden_service/`.
 4. **Restore strict system ownership and permissions:**
    Tor will aggressively refuse to boot if security permissions are loose. Execute these exact commands:
-```bash
+   ```bash
    sudo chown -R debian-tor:debian-tor /var/lib/tor/hidden_service/
    sudo chmod 700 /var/lib/tor/hidden_service/
    sudo chmod 600 /var/lib/tor/hidden_service/hs_ed25519_secret_key
    ```
 5. **Ignite Tor and verify propagation:**
-```bash
+   ```bash
    sudo systemctl start tor
    sudo systemctl status tor
    ```
@@ -135,11 +136,11 @@ If you already possess a custom vanity `.onion` domain, **do not** let Tor run t
 ***
 
 #### PHASE 4: Subfolder Deployment & Nginx Bridge
-**Crucial Architectural Note:** DeadDrop is explicitly deployed inside a subfolder (`/var/www/html/deaddrop`) rather than the absolute root. This isolates your timeline strictly to `yourdomain.onion/deaddrop`, leaving the primary root `/var/www/html` wide open for you to construct a personalized landing page, server index, or custom portal.
+**Crucial Architectural Note:** DeadDrop is explicitly deployed inside a subfolder (`/var/www/html/deaddrop`) rather than the absolute root. This isolates your timeline strictly to `yourdomain.onion/deaddrop`, leaving the primary root `/var/www/html` wide open for you to construct a personalized landing page.
 
 Pull the DeadDrop codebase directly into the subfolder and apply correct web server permissions:
 ```bash
-git clone [https://github.com/jeannesbryan/deaddrop.git](https://github.com/jeannesbryan/deaddrop.git) /var/www/html/deaddrop
+git clone https://github.com/jeannesbryan/deaddrop.git /var/www/html/deaddrop
 chown -R www-data:www-data /var/www/html/deaddrop
 chmod -R 775 /var/www/html/deaddrop
 ```
@@ -148,7 +149,7 @@ Create the Nginx routing block:
 ```bash
 nano /etc/nginx/sites-available/deaddrop
 ```
-Paste the following configuration. By pointing the `root` to `/var/www/html`, Nginx will flawlessly serve DeadDrop at the `/deaddrop` endpoint while maintaining root integrity *(replace the `.onion` address and PHP version accordingly)*:
+Paste the following configuration *(replace the `.onion` address and PHP version accordingly)*:
 ```nginx
 server {
     listen 80;
@@ -178,27 +179,32 @@ ln -s /etc/nginx/sites-available/deaddrop /etc/nginx/sites-enabled/
 systemctl restart nginx
 ```
 
-#### PHASE 5: Database Identity Configuration
+#### PHASE 5: Identity & Telegram Configuration
 ```bash
 nano /var/www/html/deaddrop/db.php
 ```
-Locate the `$config` array at the top. Insert your complete subfolder endpoint into the `'node_url'` variable:
+Locate the `$config` array at the top. Insert your complete subfolder endpoint into the `'node_url'` variable. You can also optionally enable the Telegram Bridge here for silent mobile notifications:
 ```php
-'node_url' => 'http://your_onion_address.onion/deaddrop',
+'node_url'   => 'http://your_onion_address.onion/deaddrop',
+
+// Optional Telegram Bridge Config:
+'tg_on'      => false, // Change to true to enable
+'tg_token'   => 'YOUR_BOT_TOKEN_HERE',
+'tg_chat'    => 'YOUR_CHAT_ID_HERE'
 ```
-*(Pro-Tip for Nano: DO NOT use `Ctrl+V` to paste, it will break formatting. Use `Right-Click -> Paste` or `Ctrl+Shift+V` instead).* Save and exit.
+Save and exit.
 
 #### PHASE 6: The Autonomous Heartbeat (Cron Jobs)
 DeadDrop's backend runs autonomously in the background. Open your cron editor:
 ```bash
 crontab -e
 ```
-Paste these two target lines at the bottom to maintain syndication workers and cold storage offloading targeting our subfolder structure:
+Paste these two target lines at the bottom to maintain syndication workers and the rotational backup system:
 ```bash
 # Pull data from radar and run TTL Sweeper every 1 hour:
 0 * * * * php /var/www/html/deaddrop/worker.php >> /var/www/html/deaddrop/data/worker.log 2>&1
 
-# Execute Cold Storage offloading every day at midnight (00:00):
+# Execute Global Auto-Backup (7-Day Rotation) every day at midnight (00:00):
 0 0 * * * php /var/www/html/deaddrop/offload.php >> /var/www/html/deaddrop/data/offload.log 2>&1
 ```
 
@@ -207,20 +213,15 @@ Paste these two target lines at the bottom to maintain syndication workers and c
 ---
 
 ### 📡 HOW TO FOLLOW OTHER NODES (SYNDICATION)
-To subscribe to another peer's timeline, you must supply your background worker with their exact, fully-qualified subfolder endpoint via the home command center.
-
-**Strict Radar Syntax:**
-1. **Protocol Required:** Must explicitly begin with `http://`.
-2. **Subfolder Termination:** If the peer deployed DeadDrop inside a subfolder (the standardized default), the target URL must terminate with `/deaddrop`.
+To subscribe to another peer's timeline, simply navigate to the **[ RADAR ]** Command Center (`radar.php`) on your node and enter their fully-qualified `.onion` endpoint. 
 
 *Example of a valid peer target:*
 ```text
 http://peer_onion_address_here.onion/deaddrop
 ```
+You can assign them a custom Petname (`@alias`). The system features an **Anti-Duplicate Guard**, which strictly prevents you from accidentally routing E2EE messages to the wrong node by reusing petnames.
 
-#### ⚠️ CRITICAL OPSEC RULE: PETNAME UNIQUENESS
-When assigning a Petname (`@alias`) to a peer via the home dashboard, **you must ensure the alias is 100% unique to your local radar**. 
-> **The Duplicate Alias Trap:** If you assign the exact same Petname (e.g., `@target`) to two different `.onion` endpoints, SQLite will quietly permit it. However, when you attempt to transmit an E2EE Burner DM to `@target`, the Libsodium encryption engine will strictly lock onto the Public Key of the *first* node registered under that name. **Your highly sensitive DM will be encrypted for and readable by the wrong server.** Never reuse petnames.
+Once added, the background worker will periodically pull their updates. If the target node also adds your URL to their radar, a `[🤝 Mutual]` badge will automatically appear in your Command Center.
 
 ---
 

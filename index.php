@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v2.0 - TTL & Tombstone)
+// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v5.0 - Timeline & Paging)
 // ==========================================
 require_once 'db.php';
 
@@ -8,85 +8,31 @@ $status_msg = '';
 $alert_type = 'success';
 
 // ==========================================
-// ⚙️ HANDLER: ADD OR REMOVE PEER FROM RADAR
-// ==========================================
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $input_pass = $_POST['admin_pass'] ?? '';
-    if (!password_verify($input_pass, $config['admin_hash'])) {
-        sleep(1);
-        $status_msg = "[!] ACCESS DENIED: Invalid Secure Key.";
-        $alert_type = 'danger';
-    } else {
-        // TANGKAP AKSI TAMBAH TEMAN
-        if ($_POST['action'] === 'add_peer') {
-            $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
-            $raw_alias = trim($_POST['peer_alias'] ?? '');
-            
-            // Sanitasi Alias: Buang simbol @ jika user iseng ngetik, sisakan alfanumerik
-            $alias = ltrim($raw_alias, '@');
-            $alias = preg_replace('/[^a-zA-Z0-9_-]/', '', $alias);
-            if (empty($alias)) $alias = $peer_url;
-
-            // Validasi Darknet & Format URL
-            $parsed_url = parse_url($peer_url);
-            $host_domain = $parsed_url['host'] ?? '';
-
-            if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
-                $status_msg = "[!] PROTOCOL REJECTED: Only external Darknet (.onion) endpoints are allowed.";
-                $alert_type = 'danger';
-            } else {
-                try {
-                    $stmt = $db->prepare("INSERT INTO following (onion_url, alias) VALUES (:url, :alias)");
-                    $stmt->execute([':url' => $peer_url, ':alias' => $alias]);
-                    header("Location: index.php?status=peer_added&alias=" . urlencode($alias));
-                    exit;
-                } catch (PDOException $e) {
-                    $status_msg = "[!] ERROR: Node is already in your radar or alias already exists.";
-                    $alert_type = 'danger';
-                }
-            }
-        }
-        
-        // TANGKAP AKSI PUTUS PERTEMANAN (UNFOLLOW)
-        elseif ($_POST['action'] === 'unfollow_peer') {
-            $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
-            try {
-                $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url");
-                $stmt->execute([':url' => $peer_url]);
-                header("Location: index.php?status=peer_removed");
-                exit;
-            } catch (PDOException $e) {
-                $status_msg = "[!] ERROR: Failed to remove peer from radar.";
-                $alert_type = 'danger';
-            }
-        }
-    }
-}
-
-// ==========================================
 // 📡 MENGAMBIL NOTIFIKASI STATUS & DATA
 // ==========================================
 if (isset($_GET['status'])) {
     if ($_GET['status'] === 'success') $status_msg = "[+] TRANSMISSION SUCCESSFULLY BROADCASTED TO OUTBOX.JSON";
     if ($_GET['status'] === 'destroyed') $status_msg = "[+] TOMBSTONE PROTOCOL ENGAGED: SIGNAL DESTROYED";
-    if ($_GET['status'] === 'peer_added') $status_msg = "[+] RADAR LOCKED: Successfully tracking petname @" . htmlspecialchars($_GET['alias'] ?? 'peer');
-    if ($_GET['status'] === 'peer_removed') {
-        $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
-        $alert_type = 'warning';
-    }
 }
 
+// 🧭 STATELESS NANO-PAGING LOGIC
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+if ($page < 1) $page = 1;
+$limit = 100;
+$offset = ($page - 1) * $limit;
+
 try {
-    // Ambil Timeline
-    $query = $db->query("SELECT * FROM timeline ORDER BY created_at DESC LIMIT 100");
+    // Ambil Total Data untuk Kalkulasi Halaman Akhir
+    $total_feeds = $db->query("SELECT COUNT(*) FROM timeline")->fetchColumn();
+    $total_pages = ceil($total_feeds / $limit);
+    if ($total_pages < 1) $total_pages = 1;
+
+    // Ambil Timeline dengan Offset
+    $query = $db->query("SELECT * FROM timeline ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
     $feeds = $query->fetchAll(PDO::FETCH_ASSOC);
-    
-    // Ambil Daftar Teman (Radar)
-    $query_following = $db->query("SELECT * FROM following ORDER BY id DESC");
-    $following_list = $query_following->fetchAll(PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
     $feeds = [];
-    $following_list = [];
+    $total_pages = 1;
 }
 
 // Lightweight function to fetch Parent Post
@@ -107,7 +53,6 @@ function get_parent_post($db, $reply_to_id) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#110818">
     <title>DeadDrop // Network Node</title>
-    <meta name="description" content="DeadDrop: The Tor-Native Asynchronous Social Protocol (Nano-Pub).">
     <link href="assets/torminal.css" rel="stylesheet" />
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
@@ -137,7 +82,8 @@ function get_parent_post($db, $reply_to_id) {
 
     <div class="d-flex gap-2 mb-4">
         <a href="index.php" class="t-btn" style="background: var(--t-green); color: black;">[ TIMELINE ]</a>
-        <a href="dm.php" class="t-btn outline">[ INBOX ]</a>
+        <a href="dm.php" class="t-btn outline" style="color: #ff0055; border-color: #ff0055;">[ INBOX ]</a>
+        <a href="radar.php" class="t-btn outline" style="color: var(--t-cyan, #00ffff); border-color: var(--t-cyan, #00ffff);">[ RADAR ]</a>
     </div>
 
     <?php if (!empty($status_msg)): ?>
@@ -170,54 +116,13 @@ function get_parent_post($db, $reply_to_id) {
         </form>
     </div>
 
-    <div class="t-card mb-5" style="border-style: dashed; border-color: var(--t-green-dim);">
-        <div class="font-bold mb-3 d-flex justify-content-between align-items-center" style="color: var(--t-green);">
-            <span>[ Radar Synchronizer // Node Management ]</span>
-            <span class="fs-small text-muted">Nano-Pub Protocol</span>
-        </div>
-        
-        <form action="index.php" method="POST">
-            <input type="hidden" name="action" value="add_peer">
-            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-                <input type="text" name="peer_url" class="t-input flex-fill m-0" placeholder="Endpoint URL (e.g. http://peer.onion/deaddrop)" required style="min-width: 250px;">
-                <input type="text" name="peer_alias" class="t-input w-auto m-0" placeholder="Petname (e.g. target)" required style="max-width: 150px;">
-            </div>
-            <div class="d-flex gap-2">
-                <input type="password" name="admin_pass" class="t-input flex-fill m-0" placeholder="Secure Key" required>
-                <button type="submit" class="t-btn m-0 outline warning">[ LOCK RADAR ]</button>
-            </div>
-        </form>
-
-        <?php if (!empty($following_list)): ?>
-        <div class="mt-4 pt-3" style="border-top: 1px dashed var(--t-green-dim);">
-            <div class="font-bold mb-3 fs-small text-muted" style="text-transform: uppercase;">[ Active Radar Targets ]</div>
-            
-            <?php foreach ($following_list as $peer): ?>
-                <div class="d-flex justify-content-between align-items-center mb-2 pb-2" style="border-bottom: 1px dotted rgba(0,255,65,0.2);">
-                    <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%;">
-                        <span class="t-glow font-bold text-success">@<?= htmlspecialchars($peer['alias']) ?></span><br>
-                        <span class="fs-small text-muted" style="font-size: 11px;"><?= htmlspecialchars($peer['onion_url']) ?></span>
-                    </div>
-                    <form action="index.php" method="POST" class="m-0 d-flex gap-2 align-items-center" onsubmit="return confirm('Disconnect from @<?= htmlspecialchars($peer['alias']) ?>? Your timeline will stop receiving their updates.');">
-                        <input type="hidden" name="action" value="unfollow_peer">
-                        <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
-                        <input type="password" name="admin_pass" class="t-input m-0" placeholder="Key" style="width: 65px; padding: 2px 4px; height: 26px; font-size: 11px;" required>
-                        <button type="submit" class="t-badge outline danger m-0" style="height: 26px; padding: 0 6px; border: none; cursor: pointer;">[ DEL ]</button>
-                    </form>
-                </div>
-            <?php endforeach; ?>
-            
-        </div>
-        <?php endif; ?>
-    </div>
-
     <main>
         <div class="font-bold mb-3 t-glow text-success" style="text-transform: uppercase;">[ Global Signals Data Log ]</div>
         
         <?php if (empty($feeds)): ?>
             <div class="t-empty-state">
                 <span class="t-empty-state-icon">Ø</span>
-                [!] No signals detected in the local timeline yet.
+                [!] No signals detected on Page <?= $page ?>.
             </div>
         <?php else: ?>
             <?php foreach ($feeds as $post): ?>
@@ -242,7 +147,6 @@ function get_parent_post($db, $reply_to_id) {
                                 <span class="t-badge outline warning" style="border:none;">[ ⏳ Ephemeral ]</span>
                             <?php endif; ?>
                         </div>
-
                     </div>
                     
                     <?php 
@@ -273,8 +177,26 @@ function get_parent_post($db, $reply_to_id) {
                 </div>
             <?php endforeach; ?>
         <?php endif; ?>
+
+        <?php if ($total_pages > 1): ?>
+        <div class="d-flex justify-content-center align-items-center mt-4 pt-3 t-border-top gap-3">
+            <?php if ($page > 1): ?>
+                <a href="?page=<?= $page - 1 ?>" class="t-btn outline">[ ◄ Page <?= $page - 1 ?> ]</a>
+            <?php else: ?>
+                <span class="t-btn outline text-muted" style="border-color: rgba(0,255,65,0.2); cursor: not-allowed;">[ ◄ Page ]</span>
+            <?php endif; ?>
+
+            <span class="font-bold t-glow" style="color: var(--t-green);">-- ( Current: <?= $page ?> ) --</span>
+
+            <?php if ($page < $total_pages): ?>
+                <a href="?page=<?= $page + 1 ?>" class="t-btn outline">[ Page <?= $page + 1 ?> ► ]</a>
+            <?php else: ?>
+                <span class="t-btn outline text-muted" style="border-color: rgba(0,255,65,0.2); cursor: not-allowed;">[ Page ► ]</span>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
     </main>
 </div>
-
 </body>
 </html>

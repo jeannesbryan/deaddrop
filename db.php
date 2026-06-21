@@ -5,11 +5,16 @@
 
 // ⚙️ 1. NODE CONFIGURATION (For Open Source Release)
 $config = [
-    'node_name'   => 'YOUR_NODE_NAME_HERE', // Change this to your desired node name
-    'node_url'    => 'http://your_v3_onion_address_here.onion/deaddrop', // Your Tor Hidden Service URL
-    'admin_hash'  => 'YOUR_BCRYPT_HASH_HERE', // Generate using password_hash('your_password', PASSWORD_BCRYPT)
+    'node_name'   => 'YOUR_NODE_NAME', // You can change this to your node name
+    'node_url'    => 'http://your_onion_address.onion/deaddrop', 
+    'admin_hash'  => 'YOUR_ADMIN_PASSWORD_HASH', 
     'max_outbox'  => 50,
-    'db_path'     => __DIR__ . '/data/deaddrop.sqlite'
+    'db_path'     => __DIR__ . '/data/deaddrop.sqlite',
+	
+    // 📡 TELEGRAM BRIDGE CONFIG (Optional)
+    'tg_on'       => false, // Change to true to enable
+    'tg_token'    => 'YOUR_TELEGRAM_BOT_TOKEN',
+    'tg_chat'     => 'YOUR_TELEGRAM_CHAT_ID'
 ];
 
 // 🛡️ 2. DATABASE INITIALIZATION & WAL MODE
@@ -80,6 +85,8 @@ try {
     try { $db->exec("ALTER TABLE timeline ADD COLUMN expires_at DATETIME DEFAULT NULL"); } catch (Exception $e) {}
     try { $db->exec("ALTER TABLE inbox ADD COLUMN status TEXT DEFAULT 'active'"); } catch (Exception $e) {}
     try { $db->exec("ALTER TABLE inbox ADD COLUMN expires_at DATETIME DEFAULT NULL"); } catch (Exception $e) {}
+    // 🔥 NEW INJECTION FOR v5.0 (Mutual Badge)
+    try { $db->exec("ALTER TABLE following ADD COLUMN is_mutual INTEGER DEFAULT 0"); } catch (Exception $e) {}
 
     // 🧬 GENERATE LIBSODIUM KEYPAIR IF NOT EXISTS
     $stmt = $db->query("SELECT public_key, private_key FROM node_identity WHERE id = 1");
