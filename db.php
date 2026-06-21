@@ -6,7 +6,7 @@
 // ⚙️ 1. NODE CONFIGURATION (For Open Source Release)
 $config = [
     'node_name'   => 'YOUR_NODE_NAME_HERE', // Change this to your desired node name
-    'node_url'    => 'http://your_v3_onion_address_here.onion', // Your Tor Hidden Service URL
+    'node_url'    => 'http://your_v3_onion_address_here.onion/deaddrop', // Your Tor Hidden Service URL
     'admin_hash'  => 'YOUR_BCRYPT_HASH_HERE', // Generate using password_hash('your_password', PASSWORD_BCRYPT)
     'max_outbox'  => 50,
     'db_path'     => __DIR__ . '/data/deaddrop.sqlite'
