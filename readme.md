@@ -1,4 +1,4 @@
-# > DEADDROP_ 🏴‍☠️
+# > DEADDROP_ <img src="assets/favicon-32x32.png" width="32" align="center">
 **The Tor-Native Asynchronous Social Protocol (Nano-Pub)**
 
 ![Status-Underground](https://img.shields.io/badge/Status-Underground-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
@@ -222,11 +222,16 @@ To ignite the Hybrid KEM architecture and register your Node Identity into SQLit
 sudo -u www-data php /var/www/html/deaddrop/keygen.php
 ```
 
-#### PHASE 6: Identity & Telegram Configuration
+#### PHASE 6: Master Key & Identity Configuration
+Before opening the core configuration, you must generate a secure Bcrypt hash for your Master Key. To maintain strict OpSec, execute the generator strictly via CLI:
+```bash
+php /var/www/html/deaddrop/password-generator.php
+```
+Copy the green cryptographic hash outputted to your terminal. Then, open the configuration file:
 ```bash
 nano /var/www/html/deaddrop/db.php
 ```
-Locate the `$config` array at the top. Insert your complete subfolder endpoint into the `'node_url'` variable. You can also optionally enable the Telegram Bridge here for passive security intrusion alerts:
+Locate the `$config` array at the top. Paste your generated hash into the `'admin_hash'` variable. Next, insert your complete subfolder endpoint into the `'node_url'` variable. You can also optionally enable the Telegram Bridge here for passive security intrusion alerts:
 ```php
 'node_url'   => 'http://your_onion_address.onion/deaddrop',
 

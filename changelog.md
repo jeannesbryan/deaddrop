@@ -161,3 +161,32 @@ Absolute data-at-rest protection has been enforced for the Direct Message (DM) e
 ### 🧭 PHASE 25: Autonomous Path Healing (Self-Healing Topology)
 Network transmission failures (HTTP 404) caused by truncated or malformed peer URLs are now resolved autonomously.
 * **Dynamic Probing:** The profile inspector engine now possesses an autonomous brain. If it detects a peer address missing the `/deaddrop` subfolder route, it will silently reconstruct and heal the URL in the background before firing the Hashcash Proof-of-Work cannon.
+
+---
+
+## [v7.0] - THE BLACK SITE
+DeadDrop v7.0 transitions the node from a public syndication relay into an invisible darknet bunker. This update introduces Asymmetric Visibility, zero-leak database queries, and POST-powered stateless sessions, enforcing an absolute 0% JavaScript doctrine across all error-handling mechanisms.
+
+### 🕳️ PHASE 26: The Void (UI Amputation)
+The public-facing architecture has been militarized into a "Black Site".
+* **Restricted Zone:** The primary broadcast timeline (`index.php`), command center (`radar.php`), and secure inbox (`dm.php`) now amputate all navigational UI elements from unauthorized visitors, displaying only a stark authentication terminal.
+* **Auto-Lock Protocol:** Executing critical operations (publishing payloads or triggering global deletions) now autonomously purges the active session, instantly slamming the vault shut upon transmission.
+
+### 🛡️ PHASE 27: Zero-Leak Data Extraction
+Database queries are now cryptographically gated at the PHP interpreter level.
+* **Query Blockade:** If the master key is absent, the backend explicitly refuses to execute `SELECT` queries against the SQLite database, ensuring zero CPU cycles are wasted on unauthorized reconnaissance and neutralizing passive memory leaks.
+
+### 🎭 PHASE 28: Asymmetric Profile Visibility
+The node inspector (`profile.php`) now functions as a cryptographic chameleon based on the target host.
+* **Public Manifesto:** When visitors view your sovereign node, it acts as a read-only public blog. All operational levers (`SYNC`, `KNOCK`) are safely hidden.
+* **Foreign Intel Lockdown:** If a visitor attempts to use your node to inspect a foreign entity, the UI instantly transforms into a restricted Black Site, preventing third parties from mapping your decentralized social graph.
+
+### 🧭 PHASE 29: POST-Powered Stateless Paging
+Pagination across the Timeline and Inbox has been completely rebuilt to eliminate traditional `GET` parameter vulnerabilities.
+* **Cookie-less Sessions:** Navigating through pages now utilizes hidden `POST` forms to seamlessly carry the decrypted state across the void without ever relying on browser cookies or PHP sessions.
+
+### 💀 PHASE 30: Absolute Zero-JS Doctrine
+A final forensic sweep has eradicated all lingering JavaScript dependencies from the codebase.
+* **Terminal Error Screens:** Legacy `<script>alert()</script>` fallbacks in the Tombstone deletion protocol (`delete.php`) have been purged and replaced with native HTML/CSS `terminal_error()` outputs, guaranteeing flawless execution on Tor Browser's "Safest" security tier.
+
+---

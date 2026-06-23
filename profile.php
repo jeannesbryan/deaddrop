@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v5.0 - Path Healer Ready)
+// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v7.0 - Asymmetric Black Site)
 // ==========================================
 require_once 'db.php';
 
@@ -8,8 +8,31 @@ $target_host = $_GET['host'] ?? $config['node_url'];
 $status_msg = '';
 $status_class = '';
 
+// Universal Path Healer
+$clean_target = $target_host;
+if (!preg_match('#^https?://#i', $clean_target)) $clean_target = 'http://' . $clean_target;
+if (!preg_match('#/deaddrop$#i', $clean_target)) $clean_target .= '/deaddrop';
+
+$my_url = rtrim($config['node_url'], '/');
+$is_local_profile = ($target_host === $my_url || $clean_target === $my_url || $target_host === 'localhost' || $target_host === '127.0.0.1');
+
+// 🔐 BLACK SITE MASTER AUTHENTICATION
+$unlocked = false;
+$unlock_error = '';
+
+if (isset($_POST['unlock_pass'])) {
+    if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
+        $unlocked = true;
+    } else {
+        $unlock_error = "[!] AUTHENTICATION FAILED: INVALID MASTER KEY.";
+    }
+}
+if (isset($_POST['admin_pass']) && password_verify($_POST['admin_pass'], $config['admin_hash'])) {
+    $unlocked = true; // Valid action execution naturally unlocks the current view
+}
+
 // ==========================================
-// ⚙️ HANDLER: FOLLOW, UNFOLLOW, OR PING NODE
+// ⚙️ HANDLERS: FOLLOW, UNFOLLOW, PING (Strictly Protected)
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     $input_pass = $_POST['admin_pass'] ?? '';
@@ -22,56 +45,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $action = $_POST['action'];
         $target_url = rtrim($_POST['target_url'], '/'); 
         
-        // 🛠️ UNIVERSAL PATH HEALER: Menambal URL lama yang buntung!
         $clean_target_url = $target_url;
-        if (!preg_match('#^https?://#i', $clean_target_url)) {
-            $clean_target_url = 'http://' . $clean_target_url;
-        }
-        if (!preg_match('#/deaddrop$#i', $clean_target_url)) {
-            $clean_target_url .= '/deaddrop';
-        }
+        if (!preg_match('#^https?://#i', $clean_target_url)) $clean_target_url = 'http://' . $clean_target_url;
+        if (!preg_match('#/deaddrop$#i', $clean_target_url)) $clean_target_url .= '/deaddrop';
         
         $parsed_url = parse_url($clean_target_url);
         $host_domain = $parsed_url['host'] ?? '';
         
         if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
-            $status_msg = "[!] ERROR: Strict Protocol! System only accepts Darknet (.onion) domains. Detected Host: " . htmlspecialchars($host_domain);
+            $status_msg = "[!] ERROR: Strict Protocol! System only accepts Darknet (.onion) domains.";
             $status_class = "danger";
         } else {
             if ($action === 'follow') {
                 $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias) VALUES (:url, :alias)");
                 $stmt->execute([':url' => $clean_target_url, ':alias' => $host_domain]);
-                $status_msg = "[+] SYNCHRONIZATION ACTIVE: Node added to the Cron Job radar.";
+                $status_msg = "[+] SYNCHRONIZATION ACTIVE: Node appended to your radar.";
                 $status_class = "success";
             } elseif ($action === 'unfollow') {
                 $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url OR onion_url = :url_clean");
                 $stmt->execute([':url' => $target_url, ':url_clean' => $clean_target_url]);
-                $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
+                $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node purged from radar.";
                 $status_class = "warning";
             } elseif ($action === 'ping_node') {
-                // 🛡️ Hashcash Mining Engine
-                $my_url = rtrim($config['node_url'], '/');
-                if (!preg_match('#^https?://#i', $my_url)) $my_url = 'http://' . $my_url;
-                if (!preg_match('#/deaddrop$#i', $my_url)) $my_url .= '/deaddrop';
+                // PoW Hashcash Cannon
+                $my_pow_url = rtrim($config['node_url'], '/');
+                if (!preg_match('#^https?://#i', $my_pow_url)) $my_pow_url = 'http://' . $my_pow_url;
+                if (!preg_match('#/deaddrop$#i', $my_pow_url)) $my_pow_url .= '/deaddrop';
                 
                 $timestamp = time();
                 $nonce = 0;
                 $difficulty = '0000';
                 
-                // Start mining process...
                 while (true) {
-                    $hash = hash('sha256', $my_url . $timestamp . $nonce);
+                    $hash = hash('sha256', $my_pow_url . $timestamp . $nonce);
                     if (substr($hash, 0, strlen($difficulty)) === $difficulty) break;
                     $nonce++;
                 }
 
-                // Fire the validated PoW via cURL ke alamat yang sudah disembuhkan!
                 $target_ping_url = $clean_target_url . '/ping.php';
                 $ch = curl_init($target_ping_url);
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                 curl_setopt($ch, CURLOPT_POST, true);
                 curl_setopt($ch, CURLOPT_POSTFIELDS, [
-                    'source_url' => $my_url,
+                    'source_url' => $my_pow_url,
                     'timestamp'  => $timestamp,
                     'nonce'      => $nonce
                 ]);
@@ -86,11 +102,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 curl_close($ch);
                 
+                $clean_resp = strip_tags($response ? $response : 'No response.');
                 if ($http_code == 202) {
-                    $status_msg = "[+] SIGNAL TRANSMITTED (Nonce: $nonce): " . htmlspecialchars($response);
+                    $status_msg = "[+] SIGNAL TRANSMITTED (Nonce: $nonce): " . htmlspecialchars($clean_resp);
                     $status_class = "success";
                 } else {
-                    $status_msg = "[!] PING FAILED (HTTP $http_code): " . htmlspecialchars($response);
+                    $status_msg = "[!] PING FAILED (HTTP $http_code): " . htmlspecialchars($clean_resp);
                     $status_class = "danger";
                 }
             }
@@ -99,32 +116,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 }
 
 // ==========================================
-// 📡 FETCH LOCAL CACHED PROFILE DATA
+// 📡 ASYMMETRIC DATA EXTRACTION
 // ==========================================
-try {
-    $stmt = $db->prepare("SELECT * FROM timeline WHERE author_host = :host ORDER BY created_at DESC LIMIT 100");
-    $stmt->execute([':host' => $target_host]);
-    $feeds = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    $profile_name = (!empty($feeds)) ? $feeds[0]['author_name'] : "Unknown Entity";
-    $is_local_profile = ($target_host === rtrim($config['node_url'], '/'));
-    
-    $is_following = false;
-    if (!$is_local_profile) {
-        // Cek fiksasi ganda dengan URL yang disembuhkan
-        $clean_target = (!preg_match('#^https?://#i', $target_host)) ? 'http://' . $target_host : $target_host;
-        if (!preg_match('#/deaddrop$#i', $clean_target)) $clean_target .= '/deaddrop';
-        
-        $stmt_cek = $db->prepare("SELECT COUNT(*) FROM following WHERE onion_url = :host OR onion_url = :host_clean");
-        $stmt_cek->execute([':host' => $target_host, ':host_clean' => $clean_target]);
-        $is_following = (bool) $stmt_cek->fetchColumn();
+$feeds = [];
+$profile_name = "Classified Entity";
+$is_following = false;
+$allow_view = false;
+
+if ($is_local_profile) {
+    // 🟢 WAJAH PUBLIK: Selalu terbuka! Hanya pampang post buatan lokal.
+    $allow_view = true;
+    $profile_name = $config['node_name'];
+    try {
+        $stmt = $db->query("SELECT * FROM timeline WHERE is_local = 1 ORDER BY created_at DESC LIMIT 100");
+        $feeds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) {
+        $feeds = [];
     }
-    
-} catch (PDOException $e) {
-    $feeds = [];
-    $profile_name = "Error";
-    $is_following = false;
-    $is_local_profile = true;
+} else {
+    // 🔴 WAJAH ASING: Terkunci rapat kecuali Master Key disuntikkan!
+    if ($unlocked) {
+        $allow_view = true;
+        try {
+            $stmt = $db->prepare("SELECT * FROM timeline WHERE author_host = :host OR author_host = :clean_host ORDER BY created_at DESC LIMIT 100");
+            $stmt->execute([':host' => $target_host, ':clean_host' => $clean_target]);
+            $feeds = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (!empty($feeds)) $profile_name = $feeds[0]['author_name'];
+            
+            $stmt_cek = $db->prepare("SELECT alias FROM following WHERE onion_url = :host OR onion_url = :clean_host LIMIT 1");
+            $stmt_cek->execute([':host' => $target_host, ':clean_host' => $clean_target]);
+            $saved_alias = $stmt_cek->fetchColumn();
+            
+            if ($saved_alias) {
+                $is_following = true;
+                $profile_name = '@' . $saved_alias;
+            }
+        } catch (PDOException $e) {
+            $feeds = [];
+        }
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -153,81 +184,104 @@ try {
         <div>
             <h1 class="m-0 font-bold t-glow" style="font-size: 1.8rem; color: var(--t-green);">&gt; <?= htmlspecialchars($profile_name) ?>_</h1>
             <div class="mt-1 fs-small font-bold text-muted">
-                NODE: <?= htmlspecialchars($target_host) ?>
+                NODE: <?= htmlspecialchars($clean_target) ?>
+                <?= $is_local_profile ? '<span class="t-badge success ml-2" style="border:none; padding:1px 6px;">[ Sovereign Host ]</span>' : '' ?>
             </div>
         </div>
-        <a href="index.php" class="t-btn">⇐ Back</a>
+        <a href="index.php" class="t-btn">⇐ <?= $unlocked ? 'Command Center' : 'Home' ?></a>
     </div>
 
     <?php if (!empty($status_msg)): ?>
-        <div class="t-alert <?= $status_class ?> mb-4" style="border-color: var(--t-<?= $status_class ?>); color: var(--t-<?= $status_class ?>);">
-            <?= $status_msg ?>
-        </div>
+        <div class="t-alert <?= $status_class ?> mb-4"><?= $status_msg ?></div>
     <?php endif; ?>
 
-    <?php if (!$is_local_profile): ?>
-        <div class="t-card mb-4 p-3" style="border-style: dashed; border-color: var(--t-green-dim);">
-            <form action="" method="POST" class="d-flex align-items-center gap-2 m-0 flex-wrap">
-                <input type="hidden" name="target_url" value="<?= htmlspecialchars($target_host) ?>">
-                
-                <?php if ($is_following): ?>
-                    <input type="hidden" name="action" value="unfollow">
-                    <span class="text-success fs-small flex-fill font-bold t-glow">[✓] This node is synchronized to your radar.</span>
-                    <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
-                    <button type="submit" class="t-btn danger m-0">[ DISCONNECT ]</button>
-                <?php else: ?>
-                    <input type="hidden" name="action" value="follow">
-                    <span class="text-muted fs-small flex-fill">Add this node to your radar to periodically pull its data.</span>
-                    <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
-                    <button type="submit" class="t-btn warning m-0">[ SYNC NODE ]</button>
-                <?php endif; ?>
-            </form>
+    <?php if (!$allow_view): ?>
+        <!-- 🕳️ RESTRICTED ZONE FOR STRANGERS PEEKING FOREIGN PROFILES -->
+        <div style="margin-top: 12vh; text-align: center; border: 1px dashed #ff0055; padding: 40px 20px; background: rgba(255,0,85,0.02);">
+            <h1 class="m-0 font-bold t-glow mb-2" style="font-size: 2rem; color: #ff0055;">[ 🔒 CLASSIFIED TARGET ]</h1>
+            <div class="fs-small text-muted mb-4" style="text-transform: uppercase;">Inspection of foreign entities requires Master Key uplink.</div>
             
-            <form action="" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap" style="border-top: 1px dashed rgba(0,255,65,0.2);">
-                <input type="hidden" name="target_url" value="<?= htmlspecialchars($target_host) ?>">
-                <input type="hidden" name="action" value="ping_node">
-                <span class="text-muted fs-small flex-fill">Manually knock on their door (Solves PoW puzzle before sending).</span>
-                <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
-                <button type="submit" class="t-btn outline m-0" onclick="this.innerHTML='MINING...';">[ KNOCK / PING ]</button>
+            <?php if (!empty($unlock_error)): ?>
+                <div class="t-alert danger mb-4" style="display: inline-block; text-align: left; border-color: #ff0055; color: #ff0055;"><?= htmlspecialchars($unlock_error) ?></div><br>
+            <?php endif; ?>
+
+            <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" style="display: inline-block; text-align: left; width: 100%; max-width: 350px;">
+                <input type="password" name="unlock_pass" class="t-input mb-3 w-100" placeholder="Insert Master Key..." required autofocus style="text-align: center; letter-spacing: 2px; border-color: #ff0055;">
+                <button type="submit" class="t-btn w-100 m-0 outline danger" style="color: #ff0055; border-color: #ff0055; font-weight: bold;">[ DECRYPT ENTITY CACHE ]</button>
             </form>
         </div>
-    <?php endif; ?>
+    <?php else: ?>
 
-    <main>
-        <div class="font-bold mb-3" style="text-transform: uppercase; color: var(--t-green);">[ Local Cached Data ]</div>
-        
-        <?php if (empty($feeds)): ?>
-            <div class="t-empty-state">
-                <span class="t-empty-state-icon">Ø</span>
-                [!] Signals not fully pulled yet. Local data is empty.
+        <!-- ⚔️ OPERATIONAL CONTROLS (ONLY DISPLAYED TO YOU ON FOREIGN HOSTS) -->
+        <?php if (!$is_local_profile && $unlocked): ?>
+            <div class="t-card mb-4 p-3" style="border-style: dashed; border-color: var(--t-green-dim);">
+                <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 m-0 flex-wrap">
+                    <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
+                    <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass'] ?? $_POST['admin_pass'] ?? '') ?>">
+                    
+                    <?php if ($is_following): ?>
+                        <input type="hidden" name="action" value="unfollow">
+                        <span class="text-success fs-small flex-fill font-bold t-glow">[✓] This node is synchronized to your radar.</span>
+                        <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
+                        <button type="submit" class="t-btn danger m-0">[ DISCONNECT ]</button>
+                    <?php else: ?>
+                        <input type="hidden" name="action" value="follow">
+                        <span class="text-muted fs-small flex-fill">Add this node to your radar to periodically pull its data.</span>
+                        <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
+                        <button type="submit" class="t-btn warning m-0">[ SYNC NODE ]</button>
+                    <?php endif; ?>
+                </form>
+                
+                <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                    <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
+                    <input type="hidden" name="action" value="ping_node">
+                    <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass'] ?? $_POST['admin_pass'] ?? '') ?>">
+                    <span class="text-muted fs-small flex-fill">Manually knock on their door (Solves PoW puzzle before sending).</span>
+                    <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
+                    <button type="submit" class="t-btn outline m-0" onclick="this.innerHTML='MINING...';">[ KNOCK / PING ]</button>
+                </form>
             </div>
-        <?php else: ?>
-            <?php foreach ($feeds as $post): ?>
-                <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none;">
-                    <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
-                        <div>
-                            <span class="t-badge outline font-bold"><?= htmlspecialchars($post['author_name']) ?></span>
-                        </div>
-                        <div class="text-muted">ID: <?= htmlspecialchars($post['remote_id']) ?></div>
-                    </div>
-                    
-                    <?php if (!empty($post['reply_to'])): ?>
-                        <div class="t-badge mb-2" style="background: transparent; border-style: dotted;">Replying to: <?= htmlspecialchars($post['reply_to']) ?></div>
-                    <?php endif; ?>
-
-                    <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: var(--t-green);"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
-                    
-                    <?php if (!empty($post['media_url'])): ?>
-                        <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="media-attachment">
-                    <?php endif; ?>
-                    
-                    <div class="text-right mt-3 pt-2" style="border-top: 1px dashed rgba(0,255,65,0.2);">
-                        <span class="fs-small text-muted"><?= htmlspecialchars($post['created_at']) ?> UTC</span>
-                    </div>
-                </div>
-            <?php endforeach; ?>
         <?php endif; ?>
-    </main>
+
+        <!-- 📜 TIMELINE FEEDS (Public Manifesto or Decrypted Foreign Cache) -->
+        <main>
+            <div class="font-bold mb-3" style="text-transform: uppercase; color: var(--t-green);">
+                <?= $is_local_profile ? '[ Public Broadcast Manifesto ]' : '[ Cached Foreign Intelligence ]' ?>
+            </div>
+            
+            <?php if (empty($feeds)): ?>
+                <div class="t-empty-state">
+                    <span class="t-empty-state-icon">Ø</span>
+                    [!] No public dispatches found for this entity.
+                </div>
+            <?php else: ?>
+                <?php foreach ($feeds as $post): ?>
+                    <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none;">
+                        <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
+                            <div>
+                                <span class="t-badge outline font-bold"><?= htmlspecialchars($post['author_name']) ?></span>
+                            </div>
+                            <div class="text-muted">ID: <?= htmlspecialchars($post['remote_id']) ?></div>
+                        </div>
+                        
+                        <?php if (!empty($post['reply_to'])): ?>
+                            <div class="t-badge mb-2" style="background: transparent; border-style: dotted;">Replying to: <?= htmlspecialchars($post['reply_to']) ?></div>
+                        <?php endif; ?>
+
+                        <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: var(--t-green); word-break: break-all; overflow-wrap: break-word;"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
+                        
+                        <?php if (!empty($post['media_url'])): ?>
+                            <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="media-attachment">
+                        <?php endif; ?>
+                        
+                        <div class="text-right mt-3 pt-2" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                            <span class="fs-small text-muted"><?= htmlspecialchars($post['created_at']) ?> UTC</span>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </main>
+    <?php endif; ?>
 </div>
 
 </body>
