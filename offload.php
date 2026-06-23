@@ -1,11 +1,11 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: ROTATIONAL AUTO-BACKUP (v5.0)
+// 🏴‍☠️ DEADDROP: ROTATIONAL AUTO-BACKUP (v8.0 - Stealth Jitter Archiver)
 // ==========================================
 
-// CAN ONLY BE EXECUTED VIA CLI / TERMINAL
+// EXECUTION CONTEXT STRICTLY CLI
 if (php_sapi_name() !== 'cli') {
-    die("[!] Access Denied. Must be executed via Terminal/Cron.\n");
+    die("[!] Access Denied. Protocol strictly requires Terminal/Cron execution.\n");
 }
 
 echo "============================================\n";
@@ -13,14 +13,19 @@ echo "   DEADDROP AUTO-BACKUP PROTOCOL\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
 
-// 1. Siapkan direktori backup
+// 👶 OBAT TIDUR ACAK (Cron Jitter 1 - 10 Menit)
+$jitter = random_int(1, 600);
+echo "[*] OpSec Jitter Engaged: Archiver sleeping for $jitter seconds to obfuscate cron signature...\n";
+sleep($jitter);
+
+// 1. INITIALIZE ARCHIVE DIRECTORY
 $backup_dir = __DIR__ . '/backup';
 if (!is_dir($backup_dir)) mkdir($backup_dir, 0777, true);
 
 $archive_name = 'deaddrop_backup_' . date('Ymd_His') . '.tar.gz';
 $archive_path = $backup_dir . '/' . $archive_name;
 
-// 2. Daftar target absolut yang akan dibungkus
+// 2. DEFINE ABSOLUTE RETENTION TARGETS
 $targets = [];
 if (is_dir(__DIR__ . '/data')) $targets[] = 'data';
 if (is_dir(__DIR__ . '/media')) $targets[] = 'media';
@@ -28,45 +33,42 @@ if (file_exists(__DIR__ . '/outbox.json')) $targets[] = 'outbox.json';
 if (file_exists(__DIR__ . '/db.php')) $targets[] = 'db.php';
 
 if (empty($targets)) {
-    die("[!] CRITICAL ERROR: No data found to backup.\n");
+    die("[!] CRITICAL ERROR: Target directories missing. Aborting backup.\n");
 }
 
-// Berpindah ke direktori root deaddrop agar struktur di dalam tar rapi (relatif path)
+// Re-route execution context for relative tar paths
 chdir(__DIR__);
 
-// Menyusun perintah kompresi native Linux
+// Assemble native Linux tarball command
 $target_list = implode(' ', array_map('escapeshellarg', $targets));
 $tar_command = "tar -czf " . escapeshellarg($archive_path) . " " . $target_list;
 
-echo "[>] Compressing core assets: " . implode(', ', $targets) . "...\n";
+echo "[>] Compressing core structural assets: " . implode(', ', $targets) . "...\n";
 
-// 3. Eksekusi Kompresi
+// 3. EXECUTE COMPRESSION
 exec($tar_command, $output, $return_var);
 
-// 4. Verifikasi dan Pembersihan Backup Lama (Diet eMMC)
+// 4. VERIFY ARCHIVE AND ENFORCE HARDWARE RETENTION LIMITS
 if ($return_var === 0 && file_exists($archive_path)) {
-    echo "[+] BACKUP COMPLETE. Sovereign node data is securely archived.\n";
-    echo "[*] Stored in: /backup/$archive_name\n\n";
+    echo "[+] BACKUP COMPLETE. Sovereign node data securely wrapped.\n";
+    echo "[*] Destination: /backup/$archive_name\n\n";
 
-    // ROTASI 7 HARI: Hitung jumlah fail tar.gz di folder backup
+    // 7-DAY RETENTION POLICY: Scan existing archives
     $backups = glob($backup_dir . '/deaddrop_backup_*.tar.gz');
     
     if (count($backups) > 7) {
-        // Urutkan dari yang paling baru ke yang paling usang
-        rsort($backups); 
+        rsort($backups); // Order: Newest to Oldest
+        $to_delete = array_slice($backups, 7); // Isolate outdated archives
         
-        // Ambil elemen sisanya (hari ke-8 dan seterusnya) untuk dimusnahkan
-        $to_delete = array_slice($backups, 7); 
-        
-        echo "[>] eMMC Diet Protocol Engaged. Sweeping old archives...\n";
+        echo "[>] eMMC Diet Protocol Engaged. Sweeping redundant archives...\n";
         foreach ($to_delete as $old_backup) {
             @unlink($old_backup);
             echo "    [-] Pruned: " . basename($old_backup) . "\n";
         }
-        echo "[+] Strict 7-Day retention enforced.\n";
+        echo "[+] Strict 7-Day retention successfully enforced.\n";
     }
 } else {
-    echo "[!] CRITICAL ERROR: Auto-backup failed to compress files.\n";
+    echo "[!] CRITICAL ERROR: Compression engine failed to wrap target files.\n";
 }
 
 echo "\n============================================\n";

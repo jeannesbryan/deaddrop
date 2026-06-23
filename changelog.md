@@ -190,3 +190,16 @@ A final forensic sweep has eradicated all lingering JavaScript dependencies from
 * **Terminal Error Screens:** Legacy `<script>alert()</script>` fallbacks in the Tombstone deletion protocol (`delete.php`) have been purged and replaced with native HTML/CSS `terminal_error()` outputs, guaranteeing flawless execution on Tor Browser's "Safest" security tier.
 
 ---
+
+## [v8.0] - ABSOLUTE AIRGAP & STEALTH TOPOLOGY
+DeadDrop v8.0 seals the final operational security leaks by decoupling background processes from predictable chronological patterns and isolating all clearnet API triggers through the Tor proxy.
+
+### ⏱️ PHASE 31: Cron Jitter (Anti-Timing Analysis)
+Predictable cron execution times can be mapped by data center traffic analysis.
+* **Randomized Sleep:** Background daemons (`worker.php` and `offload.php`) now inject a randomized mathematical delay (1 to 600 seconds) prior to execution, causing the node's network signature to blend flawlessly with background noise.
+
+### 🧤 PHASE 32: Airgapped Telegram Bridge
+The node no longer exposes its host IP to clearnet API servers when dispatching push notifications.
+* **SOCKS5 Proxied API:** The optional Telegram Bridge now forcefully routes all `curl` requests through the local Tor daemon (`127.0.0.1:9050`), guaranteeing that your host machine remains 100% cloaked from Telegram's server logs.
+
+---

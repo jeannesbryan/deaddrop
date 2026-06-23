@@ -30,7 +30,8 @@ Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server commun
 9. **Deniable Uniform Padding:** Total immunity against ISP Traffic Analysis. All outgoing encrypted payloads are cryptographically injected with digital noise to lock the footprint at an absolute **4096-byte (4KB) block size**.
 10. **Auto-Scaling Hashcash Defense:** Incoming network knocks to the gateway are guarded by a dynamic SHA-256 Proof-of-Work puzzle. The difficulty scales exponentially during DDoS attempts to burn botnet CPU.
 11. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
-12. **Optional Telegram Bridge:** Built-in silent API triggers to notify your mobile device of new authenticated DMs or valid gateway intrusions.
+12. **Airgapped Telegram Bridge:** Built-in silent API triggers to notify your mobile device of new authenticated DMs or valid gateway intrusions. All API dispatches are strictly routed through the Tor SOCKS5 proxy to guarantee zero clearnet IP leaks.
+13. **Cron Jitter (Anti-Timing Analysis):** Background daemons autonomously inject randomized sleep delays (1-10 minutes) before execution to defeat data center traffic analysis and chronometric tracking.
 
 ---
 

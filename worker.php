@@ -1,15 +1,20 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v6.0 - Hybrid KEM Ready)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (v8.0 - Airgapped Quantum Pool)
 // ==========================================
 require_once 'db.php';
 
 header('Content-Type: text/plain; charset=utf-8');
 
 echo "============================================\n";
-echo "   DEADDROP WORKER INITIATED (HYBRID POOL)\n";
+echo "   DEADDROP WORKER INITIATED (STRICT V8 HYBRID)\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
+
+// 👶 OBAT TIDUR ACAK (Cron Jitter 1 - 10 Menit)
+$jitter = random_int(1, 600);
+echo "[*] OpSec Jitter Engaged: Courier sleeping for $jitter seconds to obfuscate cron signature...\n";
+sleep($jitter);
 
 try {
     $now_utc = gmdate('Y-m-d\TH:i:s\Z');
@@ -29,6 +34,7 @@ try {
     }
     if ($expired_count > 0) echo "    [+] Purged $expired_count expired ephemeral signals.\n\n";
 
+    // 📡 GATHER TARGET NODES
     $target_urls = [];
     $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
     foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) $target_urls[] = $p['source_url'];
@@ -40,12 +46,11 @@ try {
 
     if (empty($target_urls)) die("[*] Radar and Queue are empty. Going back to sleep...\n");
 
-    // 🧬 PERSIAPAN KUNCI KRIPTOGRAFI
+    // 🔐 CRYPTOGRAPHIC KEYPAIR IGNITION
     $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
         base64_decode($config['private_key']), base64_decode($config['public_key'])
     );
     
-    // 🔮 Ambil Kunci Kuantum dari Brankas (Jika sudah generate)
     $my_pq_keypair = null;
     if (!empty($config['pq_private']) && !empty($config['pq_public'])) {
         $my_pq_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
@@ -125,6 +130,7 @@ try {
         $remote_pub_key = $feed['public_key'] ?? null;
         $remote_pq_pub = $feed['pq_public'] ?? null;
 
+        // Update mutual status and remote keys
         if ($remote_pub_key) {
             $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, pq_public = :pq, is_mutual = :mut WHERE onion_url = :url");
             $stmt_key->execute([':pub' => $remote_pub_key, ':pq' => $remote_pq_pub, ':mut' => $is_mutual, ':url' => $onion_url]);
@@ -148,6 +154,7 @@ try {
 
             $remote_status = $post['status'] ?? 'active';
 
+            // Tombstone Protocol Intercept
             if ($remote_status === 'deleted') {
                 $stmt_del_media = $db->prepare("SELECT media_url FROM timeline WHERE remote_id = :rid UNION SELECT media_url FROM inbox WHERE remote_id = :rid");
                 $stmt_del_media->execute([':rid' => $remote_id]);
@@ -169,83 +176,57 @@ try {
                 $is_decrypted_successfully = false;
                 $is_burner_received = false;
 
-                $is_hybrid = false;
-                $is_e2ee = false;
-
-                // 🔮 Deteksi Amplop Hibrida vs Amplop Klasik
+                // STRICT V6/V8 HYBRID IDENTIFICATION (Legacy E2EE Dropped)
                 if (strpos($raw_content, 'HYBRID:') === 0 || strpos($raw_content, 'HYBRID-BURNER:') === 0) {
-                    $is_hybrid = true;
                     $is_burner_received = (strpos($raw_content, 'HYBRID-BURNER:') === 0);
                     $offset = $is_burner_received ? 14 : 7;
-                } elseif (strpos($raw_content, 'E2EE:') === 0 || strpos($raw_content, 'E2EE-BURNER:') === 0) {
-                    $is_e2ee = true;
-                    $is_burner_received = (strpos($raw_content, 'E2EE-BURNER:') === 0);
-                    $offset = $is_burner_received ? 12 : 5;
-                }
-
-                if ($is_hybrid || $is_e2ee) {
+                    
                     $payload_str = substr($raw_content, $offset);
                     $decrypted = false;
 
-                    if ($is_hybrid) {
-                        $parts = explode('::', $payload_str);
-                        if (count($parts) === 3) {
-                            $nonce = base64_decode($parts[0]);
-                            $kem_layer2 = base64_decode($parts[1]);
-                            $ciphertext = base64_decode($parts[2]);
+                    $parts = explode('::', $payload_str);
+                    if (count($parts) === 3) {
+                        $nonce = base64_decode($parts[0]);
+                        $kem_layer2 = base64_decode($parts[1]);
+                        $ciphertext = base64_decode($parts[2]);
 
-                            // 🔓 PEMBONGKARAN BRANKAS 3 LAPIS
-                            // Buka Amplop Lapis 2 (Kunci Kuantum / Mockup)
-                            $kem_layer1 = false;
-                            if ($my_pq_keypair) {
-                                $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
-                            }
-                            if ($kem_layer1 === false) {
-                                // Fallback: Kawan menggunakan node versi lama tanpa PQ Key
-                                $kem_layer1 = $kem_layer2; 
-                            }
+                        // RAM-Only KEM Authentication Check
+                        $kem_layer1 = false;
+                        if ($my_pq_keypair) $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
+                        if ($kem_layer1 === false) $kem_layer1 = $kem_layer2; 
 
-                            // Buka Amplop Lapis 1 (Kunci Libsodium Standar)
-                            $sym_key = sodium_crypto_box_seal_open($kem_layer1, $my_keypair);
-
-                            if ($sym_key !== false) {
-                                // Buka Muatan Utama (XChaCha20-Poly1305) menggunakan Kunci Simetris Ephemeral
-                                $decrypted = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $sym_key);
-                            }
+                        $sym_key = sodium_crypto_box_seal_open($kem_layer1, $my_keypair);
+                        if ($sym_key !== false) {
+                            $decrypted = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $sym_key);
                         }
-                    } else {
-                        // 🔙 MUNDUR KE KLASIK: Membaca E2EE versi lama jika pengirim masih di v5.0
-                        $ciphertext = base64_decode($payload_str);
-                        $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
                     }
 
                     if ($decrypted !== false) {
-                        // 🛡️ FITUR 1: STRIP PADDING (OpSec v6.0)
-                        $noise_pos = strpos($decrypted, "\n[::NOISE::]");
-                        if ($noise_pos !== false) {
-                            $decrypted = substr($decrypted, 0, $noise_pos);
-                        }
-
-                        $prefix_text = $is_burner_received ? "[🔥 BURNER DROP - DESTROYED UPON READING]\n" : "[🔓 DECRYPTED PRIVATE DROP]\n";
-                        $raw_content = $prefix_text . $decrypted;
+                        // DOCTRINE ENFORCEMENT: Zero-Knowledge Data at Rest.
+                        // We strictly retain $raw_content as pure ciphertext for SQL storage.
                         $is_decrypted_successfully = true; 
                         
-                        // 📡 TELEGRAM BRIDGE DM TRIGGER
+                        // 📡 AIRGAPPED TELEGRAM BRIDGE DM TRIGGER (Routed strictly via Tor SOCKS5 Proxy)
                         if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
-                            $tipe_pesan = $is_burner_received ? "🔥 HYBRID BURNER" : "🔓 HYBRID DROP";
-                            $msg_tg = "INBOX NODE: 1 $tipe_pesan berhasil didekripsi dari @" . $author_name;
+                            $drop_type = $is_burner_received ? "🔥 HYBRID BURNER" : "🔓 HYBRID DROP";
+                            $msg_tg = "INBOX SECURE ALERT: 1 valid $drop_type received and authenticated from @" . $author_name;
                             
                             $url_tg = "https://api.telegram.org/bot" . $config['tg_token'] . "/sendMessage";
                             $chTg = curl_init($url_tg);
                             curl_setopt($chTg, CURLOPT_RETURNTRANSFER, true);
                             curl_setopt($chTg, CURLOPT_POST, true);
                             curl_setopt($chTg, CURLOPT_POSTFIELDS, ['chat_id' => $config['tg_chat'], 'text' => $msg_tg]);
-                            curl_setopt($chTg, CURLOPT_TIMEOUT, 5);
+                            curl_setopt($chTg, CURLOPT_TIMEOUT, 15);
+                            
+                            // 🧤 SARUNG TANGAN GAIB
+                            curl_setopt($chTg, CURLOPT_PROXY, "127.0.0.1:9050");
+                            curl_setopt($chTg, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+                            
                             curl_exec($chTg);
                             curl_close($chTg);
                         }
                     } else {
-                        $raw_content = "[🔒 ENCRYPTED HYBRID CIPHERTEXT] // This message is securely locked inside a 3-layer vault.";
+                        $raw_content = "[🔒 ENCRYPTED HYBRID CIPHERTEXT] // Foreign vault payload.";
                         $is_burner_received = false;
                     }
                 }
@@ -264,7 +245,7 @@ try {
                     ':rid'     => $remote_id,
                     ':name'    => $author_name,
                     ':host'    => $author_domain,
-                    ':content' => $raw_content,
+                    ':content' => $raw_content, // Strictly pure ciphertext
                     ':media'   => $safe_media,
                     ':reply'   => $post['reply_to'] ?? null,
                     ':stat'    => $final_status,
@@ -281,6 +262,7 @@ try {
     
     curl_multi_close($multi_handle);
 
+    // Garbage Collection & Trim
     $db->exec("DELETE FROM ping_queue");
     $db->exec("DELETE FROM timeline WHERE is_local = 0 AND id NOT IN (SELECT id FROM timeline WHERE is_local = 0 ORDER BY created_at DESC LIMIT 2000)");
 

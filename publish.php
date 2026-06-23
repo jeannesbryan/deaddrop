@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE (E2EE + TTL)
+// 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE (v6.0 - Strict Quantum Ledger)
 // ==========================================
 require_once 'db.php';
 
@@ -17,50 +17,48 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input_pass = $_POST['admin_pass'] ?? '';
 if (!password_verify($input_pass, $config['admin_hash'])) {
     sleep(2);
-    terminal_error("[ ACCESS DENIED ] Invalid security credentials.");
+    terminal_error("[ ACCESS DENIED ] Invalid cryptographic credentials.");
 }
 
 $content = trim(strip_tags($_POST['content'] ?? ''));
 $reply_to = trim(strip_tags($_POST['reply_to'] ?? ''));
 if (empty($content)) {
-    terminal_error("[ ERROR ] Transmission is empty.");
+    terminal_error("[ ERROR ] Transmission payload is empty.");
 }
 
-// ⏳ PHASE 2: TTL (Time-To-Live) Calculation
+// ⏳ EPHEMERAL TTL CALCULATION
 $ttl_hours = isset($_POST['ttl']) ? (int)$_POST['ttl'] : 0;
 $expires_at = null;
 if ($ttl_hours > 0) {
     $expires_at = gmdate('Y-m-d\TH:i:s\Z', strtotime("+$ttl_hours hours"));
 }
 
-// 🔐 PHASE 1: HYBRID KEM ENVELOPE (XChaCha20 + X25519 + PQ Mockup)
+// 🔐 HYBRID KEM ENVELOPE & DOUBLE-LEDGER PREPARATION
 $target = trim(strip_tags($_POST['target'] ?? ''));
-$is_e2ee = false;
+$is_private_drop = false;
 $is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1');
 
 if (!empty($target)) {
-    $is_e2ee = true;
+    $is_private_drop = true;
+    $pristine_plaintext = $content; // Retain clean plaintext for local sender view
     
-    // 1. Dapatkan Public Key (Lapis 1) dan PQ Public Key (Lapis 2) milik Target
     if (strpos($target, '@') === 0) {
         $alias = substr($target, 1);
         $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE alias = :alias LIMIT 1");
         $stmt_key->execute([':alias' => $alias]);
         $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
-        if (!$target_keys) terminal_error("[ E2EE ERROR ] Alias not found.");
+        if (!$target_keys) terminal_error("[ E2EE ERROR ] Peer alias not registered in active radar.");
     } else {
         $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE onion_url = :url LIMIT 1");
         $stmt_key->execute([':url' => rtrim($target, '/')]);
         $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
-        if (!$target_keys) terminal_error("[ E2EE ERROR ] Target Public Key not found.");
+        if (!$target_keys) terminal_error("[ E2EE ERROR ] Target Public Key not found in radar.");
     }
 
     $target_pub_key = base64_decode($target_keys['public_key']);
     $target_pq_pub  = !empty($target_keys['pq_public']) ? base64_decode($target_keys['pq_public']) : null;
 
-    // ==========================================
-    // 🛡️ FITUR 1: DENIABLE UNIFORM PADDING
-    // ==========================================
+    // 🛡️ DENIABLE UNIFORM NOISE PADDING (4KB BLOCK ALIGNMENT)
     $block_size = 4096; 
     $delimiter = "\n[::NOISE::]";
     $current_len = strlen($content);
@@ -70,48 +68,45 @@ if (!empty($target)) {
         $noise = base64_encode(random_bytes($pad_len)); 
         $content .= $delimiter . substr($noise, 0, $pad_len);
     }
-    // ==========================================
 
-    // ==========================================
-    // 🔮 FITUR 3: THE HYBRID ENCAPSULATION
-    // ==========================================
-    // A. Buat Kunci Simetris sekali pakai (XChaCha20) untuk data utama
+    // 🔒 3-LAYER HYBRID KEM ENCAPSULATION
     $sym_key = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES);
     $nonce   = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
     
-    // B. Gembok Data Utama dengan Kunci Simetris tersebut
+    // Layer 0: Payload Encryption
     $ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt($content, '', $nonce, $sym_key);
-
-    // C. KEM Layer 1: Gembok Kunci Simetris dengan Libsodium Target
+    
+    // Layer 1: Classical ECDH (X25519)
     $kem_layer1 = sodium_crypto_box_seal($sym_key, $target_pub_key);
 
-    // D. KEM Layer 2: Gembok Layer 1 dengan Kunci Kuantum Target (Jika node target sudah upgrade)
+    // Layer 2: Post-Quantum Mockup Wrap
     if ($target_pq_pub) {
         $kem_layer2 = sodium_crypto_box_seal($kem_layer1, $target_pq_pub);
     } else {
-        $kem_layer2 = $kem_layer1; // Backward compatibility untuk node versi lama
+        $kem_layer2 = $kem_layer1; 
     }
 
-    // E. Rakit Amplop Final: [Nonce] :: [KEM Encapsulated Key] :: [Ciphertext Payload]
+    // Assemble Quantum Vault Block
     $final_payload = base64_encode($nonce) . '::' . base64_encode($kem_layer2) . '::' . base64_encode($ciphertext);
-    // ==========================================
-
     $prefix = $is_burner ? 'HYBRID-BURNER:' : 'HYBRID:';
-    $content = $prefix . $final_payload;
+    $encrypted_vault_envelope = $prefix . $final_payload;
+
+    // 🧬 DOUBLE-LEDGER BINDING: Fuse pristine plaintext with ciphertext envelope
+    $content = $pristine_plaintext . "[[SPLIT_LEDGER]]" . $encrypted_vault_envelope;
 }
 
-// 3. CAPTURE & PROCESS MEDIA
+// 📷 EXIF-STRIPPED MEDIA PROCESSING
 $media_url = null;
 if (isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
     $file_tmp  = $_FILES['media']['tmp_name'];
     $file_name = $_FILES['media']['name'];
     $file_size = $_FILES['media']['size'];
     
-    if ($file_size > 2097152) terminal_error("[ ERROR ] Maximum image size is 2MB.");
+    if ($file_size > 2097152) terminal_error("[ ERROR ] Payload exceeds 2MB limit.");
     
     $ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
     $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
-    if (!in_array($ext, $allowed)) terminal_error("[ ERROR ] Image format not supported.");
+    if (!in_array($ext, $allowed)) terminal_error("[ ERROR ] Unsupported media matrix.");
     
     $new_filename = hash('sha256', uniqid('', true)) . '.' . $ext;
     $upload_dir = __DIR__ . '/media/';
@@ -119,16 +114,17 @@ if (isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
     
     if (move_uploaded_file($file_tmp, $upload_dir . $new_filename)) {
         $target_file = $upload_dir . $new_filename;
+        // Strip EXIF Metadata via Perl Engine
         shell_exec('exiftool -all= -overwrite_original ' . escapeshellarg($target_file));
         $media_url = rtrim($config['node_url'], '/') . '/media/' . $new_filename;
     }
 }
 
-// 4. SAVE TO DATABASE & REBUILD JSON
+// 💽 DATABASE INJECTION & SURGICAL JSON REBUILD
 try {
     $local_id = generate_local_id(); 
     $now_utc = gmdate('Y-m-d\TH:i:s\Z'); 
-    $table_name = $is_e2ee ? 'inbox' : 'timeline';
+    $table_name = $is_private_drop ? 'inbox' : 'timeline';
     
     $stmt = $db->prepare("INSERT INTO $table_name (remote_id, author_name, author_host, content, media_url, is_local, reply_to, status, expires_at, created_at) 
                           VALUES (:rid, :name, :host, :content, :media, 1, :reply, 'active', :expires, :waktu)");
@@ -137,14 +133,14 @@ try {
         ':rid'     => $local_id,
         ':name'    => $config['node_name'],
         ':host'    => $config['node_url'],
-        ':content' => $content,
+        ':content' => $content, // Injects Double-Ledger String
         ':media'   => $media_url,
         ':reply'   => empty($reply_to) ? null : $reply_to,
         ':expires' => $expires_at,
         ':waktu'   => $now_utc
     ]);
 
-    // Export payload including status and expires_at
+    // Reconstruct outbox.json for external workers
     $stmt_out = $db->prepare("
         SELECT id, content, media_url, reply_to, status, expires_at, timestamp FROM (
             SELECT remote_id as id, content, media_url, reply_to, status, expires_at, created_at as timestamp 
@@ -158,22 +154,27 @@ try {
     $stmt_out->execute();
     $my_posts = $stmt_out->fetchAll(PDO::FETCH_ASSOC);
 
+    // 🛡️ SURGICAL INTERVENTION: Eradicate internal plaintext before broadcasting to outbox.json
+    foreach ($my_posts as &$export_item) {
+        if (strpos($export_item['content'], '[[SPLIT_LEDGER]]') !== false) {
+            $ledger_parts = explode('[[SPLIT_LEDGER]]', $export_item['content']);
+            $export_item['content'] = $ledger_parts[1]; // Strictly broadcast the ciphertext envelope!
+        }
+    }
+
     $nano_pub_feed = [
         "protocol"     => "Nano-Pub",
         "author"       => $config['node_name'],
         "domain"       => $config['node_url'],
         "public_key"   => $config['public_key'],
-        
-        // 🔮 FITUR 3: PQC Public Key Broadcast
         "pq_public"    => $config['pq_public'] ?? null, 
-        
         "last_updated" => $now_utc,
         "posts"        => $my_posts
     ];
 
     file_put_contents(__DIR__ . '/outbox.json', json_encode($nano_pub_feed, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-    $redirect_target = $is_e2ee ? 'dm.php' : 'index.php';
+    $redirect_target = $is_private_drop ? 'dm.php' : 'index.php';
     header("Location: $redirect_target?status=success");
     exit;
 } catch (Exception $e) {

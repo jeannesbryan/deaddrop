@@ -10,7 +10,7 @@ if (php_sapi_name() !== 'cli') {
 
 echo "Generating Layer 2 (Post-Quantum Mockup) Keys...\n";
 
-// Menggunakan Libsodium Keypair baru sebagai placeholder algoritma Kyber
+// Utilizing a secondary Libsodium Keypair as a structural ML-KEM (Kyber) placeholder
 $pq_keypair = sodium_crypto_box_keypair();
 $pq_public = base64_encode(sodium_crypto_box_publickey($pq_keypair));
 $pq_private = base64_encode(sodium_crypto_box_secretkey($pq_keypair));

@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE DOOR (Ping Endpoint w/ Auto-Scaling PoW)
+// 🏴‍☠️ DEADDROP: THE DOOR (v8.0 - Airgapped Gatekeeper)
 // ==========================================
 require_once 'db.php';
 
@@ -32,18 +32,18 @@ if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && 
     die("[!] PROTOCOL REJECTED: Only external Darknet (.onion) networks are allowed.");
 }
 
-// 📊 MENGHITUNG ANTREAN (Auto-Scaling Defense Logic)
+// 📊 AUTO-SCALING DEFENSE QUEUE METRICS
 $queue_count = $db->query("SELECT COUNT(*) FROM ping_queue")->fetchColumn();
 
 if ($queue_count > 150) {
-    $difficulty = '000000'; // ANTI-DDOS NUKE: ~16 juta komputasi
+    $difficulty = '000000'; // ANTI-DDOS NUKE: ~16 million computations
 } elseif ($queue_count > 50) {
-    $difficulty = '00000';  // HIGH SHIELD: ~1 juta komputasi
+    $difficulty = '00000';  // HIGH SHIELD: ~1 million computations
 } else {
-    $difficulty = '0000';   // NORMAL: ~65 ribu komputasi
+    $difficulty = '0000';   // NORMAL: ~65k computations
 }
 
-// 🛡️ HASHCASH VERIFICATION DENGAN KESULITAN DINAMIS
+// 🛡️ DYNAMIC HASHCASH VERIFICATION
 $data_to_hash = rtrim($source_url, '/') . $timestamp . $nonce;
 $hash = hash('sha256', $data_to_hash);
 
@@ -52,7 +52,7 @@ if (substr($hash, 0, strlen($difficulty)) !== $difficulty) {
     die("[!] REJECTED: Proof-of-Work invalid. You failed the Level $difficulty puzzle.");
 }
 
-// 🛑 BATAS MUTLAK SERVER
+// 🛑 ABSOLUTE SERVER CAP
 if ($queue_count > 200) {
     http_response_code(429);
     die("[!] QUEUE FULL: Node radar is currently overwhelmed. Try again later.");
@@ -62,16 +62,21 @@ try {
     $stmt = $db->prepare("INSERT INTO ping_queue (source_url) VALUES (:url)");
     $stmt->execute([':url' => rtrim($source_url, '/')]);
     
-    // 📡 TELEGRAM BRIDGE PING TRIGGER
+    // 📡 AIRGAPPED TELEGRAM BRIDGE (Routed strictly via Tor SOCKS5 Proxy)
     if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
-        $msg_tg = "📡 RADAR NODE: Mendapat ketukan masuk (Ping) baru dari:\n" . rtrim($source_url, '/');
+        $msg_tg = "📡 RADAR INTRUSION: Valid ping/knock received from:\n" . rtrim($source_url, '/');
         $url_tg = "https://api.telegram.org/bot" . $config['tg_token'] . "/sendMessage";
         
         $chTg = curl_init($url_tg);
         curl_setopt($chTg, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($chTg, CURLOPT_POST, true);
         curl_setopt($chTg, CURLOPT_POSTFIELDS, ['chat_id' => $config['tg_chat'], 'text' => $msg_tg]);
-        curl_setopt($chTg, CURLOPT_TIMEOUT, 5);
+        curl_setopt($chTg, CURLOPT_TIMEOUT, 15);
+        
+        // 🧤 SARUNG TANGAN GAIB
+        curl_setopt($chTg, CURLOPT_PROXY, "127.0.0.1:9050");
+        curl_setopt($chTg, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+        
         curl_exec($chTg);
         curl_close($chTg);
     }
