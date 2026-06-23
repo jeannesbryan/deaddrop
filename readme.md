@@ -226,7 +226,9 @@ nano /var/www/html/deaddrop/db.php
 ```
 Locate the `$config` array at the top. Insert your complete subfolder endpoint into the `'node_url'` variable. You can also optionally enable the Telegram Bridge here for silent mobile notifications:
 ```php
+'node_name'   => 'YOUR_NODE_NAME',
 'node_url'   => 'http://your_onion_address.onion/deaddrop',
+'admin_hash'  => 'YOUR_ADMIN_PASSWORD_HASH',
 
 // Optional Telegram Bridge Config:
 'tg_on'      => false, // Change to true to enable
@@ -236,17 +238,19 @@ Locate the `$config` array at the top. Insert your complete subfolder endpoint i
 Save and exit.
 
 #### PHASE 7: The Autonomous Heartbeat (Cron Jobs)
-DeadDrop's backend runs autonomously in the background. Open your cron editor:
+DeadDrop's backend runs autonomously in the background. To guarantee strict OpSec permissions and prevent cron environment failures, you MUST bind the scheduler to the web server's user (`www-data`) and use absolute execution paths. 
+
+Open the restricted cron editor:
 ```bash
-crontab -e
+sudo crontab -u www-data -e
 ```
 Paste these two target lines at the bottom to maintain syndication workers and the rotational backup system:
 ```bash
 # Pull data from radar and run TTL Sweeper every 1 hour:
-0 * * * * php /var/www/html/deaddrop/worker.php >> /var/www/html/deaddrop/data/worker.log 2>&1
+0 * * * * /usr/bin/php /var/www/html/deaddrop/worker.php >> /var/www/html/deaddrop/data/worker.log 2>&1
 
 # Execute Global Auto-Backup (7-Day Rotation) every day at midnight (00:00):
-0 0 * * * php /var/www/html/deaddrop/offload.php >> /var/www/html/deaddrop/data/offload.log 2>&1
+0 0 * * * /usr/bin/php /var/www/html/deaddrop/offload.php >> /var/www/html/deaddrop/data/offload.log 2>&1
 ```
 
 **Congratulations. Your Sovereign Node is now fully hardened and autonomous in the darknet.**
