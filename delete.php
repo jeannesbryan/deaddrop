@@ -73,6 +73,10 @@ try {
         "author"       => $config['node_name'],
         "domain"       => $config['node_url'],
         "public_key"   => $config['public_key'],
+        
+        // 🔮 FITUR 3: PQC Public Key Broadcast
+        "pq_public"    => $config['pq_public'] ?? null, 
+        
         "last_updated" => $now_utc,
         "posts"        => $my_posts
     ];

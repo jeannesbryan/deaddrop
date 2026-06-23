@@ -62,9 +62,9 @@ function get_parent_post($db, $reply_to_id) {
     <meta name="theme-color" content="#110818">
     <title>DeadDrop // Secure Inbox</title>
     <link href="assets/torminal.css" rel="stylesheet" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
     <style>
         .post-card { border-left: 3px solid #ff0055; transition: 0.2s; margin-bottom: 15px; background: rgba(255,0,85,0.02); }
         .post-card:hover { border-left-color: #ff3377; background: rgba(255,0,85,0.05); }
@@ -177,7 +177,13 @@ function get_parent_post($db, $reply_to_id) {
                     endif; 
                     ?>
 
-                    <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: #eebbcc;"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
+                    <?php 
+                    $display_content = $post['content'];
+                    if (strpos($display_content, 'E2EE:') === 0 || strpos($display_content, 'E2EE-BURNER:') === 0 || strpos($display_content, 'HYBRID:') === 0 || strpos($display_content, 'HYBRID-BURNER:') === 0) {
+                        $display_content = "[🔒 ENCRYPTED OUTGOING DROP]\n> Vault Architecture    : 3-Layer Hybrid KEM\n> Ciphertext Block Size : 4096 Bytes\n> Status                : Awaiting target extraction.";
+                    }
+                    ?>
+                    <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: #eebbcc; font-family: monospace;"><?= nl2br(htmlspecialchars($display_content)) ?></div>
                     
                     <?php if (!empty($post['media_url'])): ?>
                         <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="media-attachment">

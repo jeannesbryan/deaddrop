@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v3.0 - PoW Ready)
+// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v5.0 - Path Healer Ready)
 // ==========================================
 require_once 'db.php';
 
@@ -22,26 +22,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $action = $_POST['action'];
         $target_url = rtrim($_POST['target_url'], '/'); 
         
-        $parsed_url = parse_url($target_url);
+        // 🛠️ UNIVERSAL PATH HEALER: Menambal URL lama yang buntung!
+        $clean_target_url = $target_url;
+        if (!preg_match('#^https?://#i', $clean_target_url)) {
+            $clean_target_url = 'http://' . $clean_target_url;
+        }
+        if (!preg_match('#/deaddrop$#i', $clean_target_url)) {
+            $clean_target_url .= '/deaddrop';
+        }
+        
+        $parsed_url = parse_url($clean_target_url);
         $host_domain = $parsed_url['host'] ?? '';
         
         if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
-            $status_msg = "[!] ERROR: Strict Protocol! System only accepts Darknet (.onion) domains.";
+            $status_msg = "[!] ERROR: Strict Protocol! System only accepts Darknet (.onion) domains. Detected Host: " . htmlspecialchars($host_domain);
             $status_class = "danger";
         } else {
             if ($action === 'follow') {
                 $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias) VALUES (:url, :alias)");
-                $stmt->execute([':url' => $target_url, ':alias' => $target_url]);
+                $stmt->execute([':url' => $clean_target_url, ':alias' => $host_domain]);
                 $status_msg = "[+] SYNCHRONIZATION ACTIVE: Node added to the Cron Job radar.";
                 $status_class = "success";
             } elseif ($action === 'unfollow') {
-                $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url");
-                $stmt->execute([':url' => $target_url]);
+                $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url OR onion_url = :url_clean");
+                $stmt->execute([':url' => $target_url, ':url_clean' => $clean_target_url]);
                 $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
                 $status_class = "warning";
             } elseif ($action === 'ping_node') {
-                // 🛡️ PHASE 3: Hashcash Mining Engine
+                // 🛡️ Hashcash Mining Engine
                 $my_url = rtrim($config['node_url'], '/');
+                if (!preg_match('#^https?://#i', $my_url)) $my_url = 'http://' . $my_url;
+                if (!preg_match('#/deaddrop$#i', $my_url)) $my_url .= '/deaddrop';
+                
                 $timestamp = time();
                 $nonce = 0;
                 $difficulty = '0000';
@@ -49,14 +61,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 // Start mining process...
                 while (true) {
                     $hash = hash('sha256', $my_url . $timestamp . $nonce);
-                    if (substr($hash, 0, strlen($difficulty)) === $difficulty) {
-                        break;
-                    }
+                    if (substr($hash, 0, strlen($difficulty)) === $difficulty) break;
                     $nonce++;
                 }
 
-                // Fire the validated PoW via cURL
-                $target_ping_url = $target_url . '/ping.php';
+                // Fire the validated PoW via cURL ke alamat yang sudah disembuhkan!
+                $target_ping_url = $clean_target_url . '/ping.php';
                 $ch = curl_init($target_ping_url);
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
                 curl_setopt($ch, CURLOPT_POST, true);
@@ -101,8 +111,12 @@ try {
     
     $is_following = false;
     if (!$is_local_profile) {
-        $stmt_cek = $db->prepare("SELECT COUNT(*) FROM following WHERE onion_url = :host");
-        $stmt_cek->execute([':host' => $target_host]);
+        // Cek fiksasi ganda dengan URL yang disembuhkan
+        $clean_target = (!preg_match('#^https?://#i', $target_host)) ? 'http://' . $target_host : $target_host;
+        if (!preg_match('#/deaddrop$#i', $clean_target)) $clean_target .= '/deaddrop';
+        
+        $stmt_cek = $db->prepare("SELECT COUNT(*) FROM following WHERE onion_url = :host OR onion_url = :host_clean");
+        $stmt_cek->execute([':host' => $target_host, ':host_clean' => $clean_target]);
         $is_following = (bool) $stmt_cek->fetchColumn();
     }
     
@@ -121,9 +135,9 @@ try {
     <meta name="theme-color" content="#110818">
     <title>DeadDrop // Inspect Node</title>
     <link href="assets/torminal.css" rel="stylesheet" />
-    <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png" />
-    <link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32x32.png" />
-    <link rel="icon" type="image/png" sizes="16x16" href="/assets/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
     <style>
         .post-card { border-left: 3px solid var(--t-green-dim); transition: 0.2s; margin-bottom: 15px; }
         .post-card:hover { border-left-color: var(--t-green); background: rgba(0,255,65,0.03); }

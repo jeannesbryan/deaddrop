@@ -1,13 +1,13 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v5.0 Final - Mutual & Telegram)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (Worker v6.0 - Hybrid KEM Ready)
 // ==========================================
 require_once 'db.php';
 
 header('Content-Type: text/plain; charset=utf-8');
 
 echo "============================================\n";
-echo "   DEADDROP WORKER INITIATED\n";
+echo "   DEADDROP WORKER INITIATED (HYBRID POOL)\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
 
@@ -40,16 +40,29 @@ try {
 
     if (empty($target_urls)) die("[*] Radar and Queue are empty. Going back to sleep...\n");
 
+    // 🧬 PERSIAPAN KUNCI KRIPTOGRAFI
     $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
         base64_decode($config['private_key']), base64_decode($config['public_key'])
     );
+    
+    // 🔮 Ambil Kunci Kuantum dari Brankas (Jika sudah generate)
+    $my_pq_keypair = null;
+    if (!empty($config['pq_private']) && !empty($config['pq_public'])) {
+        $my_pq_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
+            base64_decode($config['pq_private']), base64_decode($config['pq_public'])
+        );
+    }
+
+    echo "[>] Constructing SOCKS5 Persistent Tunnels for " . count($target_urls) . " nodes...\n";
+    
+    $multi_handle = curl_multi_init();
+    $curl_handles = [];
 
     foreach ($target_urls as $onion_url) {
         $onion_url = rtrim($onion_url, '/');
         $outbox_url = $onion_url . '/outbox.json';
         $host_domain = parse_url($onion_url)['host'] ?? '';
 
-        echo "[>] Inspecting Node: " . $host_domain . "\n";
         $is_onion = preg_match('/\.onion$/i', $host_domain);
         $is_local = ($host_domain === 'localhost' || $host_domain === '127.0.0.1');
 
@@ -59,27 +72,62 @@ try {
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_TCP_KEEPALIVE, 1);
+        curl_setopt($ch, CURLOPT_FORBID_REUSE, 0); 
+        curl_setopt($ch, CURLOPT_FRESH_CONNECT, 0);
+
         if ($is_onion) {
             curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
             curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
         }
-        $json_response = curl_exec($ch);
+        
+        curl_multi_add_handle($multi_handle, $ch);
+        $curl_handles[$onion_url] = $ch;
+    }
+
+    echo "[>] Firing Concurrent Requests (Ignition)...\n";
+    
+    $active = null;
+    do {
+        $mrc = curl_multi_exec($multi_handle, $active);
+    } while ($mrc == CURLM_CALL_MULTI_PERFORM);
+
+    while ($active && $mrc == CURLM_OK) {
+        if (curl_multi_select($multi_handle) == -1) usleep(100);
+        do {
+            $mrc = curl_multi_exec($multi_handle, $active);
+        } while ($mrc == CURLM_CALL_MULTI_PERFORM);
+    }
+
+    echo "[+] Data received. Processing payloads...\n\n";
+
+    foreach ($curl_handles as $onion_url => $ch) {
+        $json_response = curl_multi_getcontent($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        
+        curl_multi_remove_handle($multi_handle, $ch);
         curl_close($ch);
 
-        if ($http_code !== 200 || !$json_response) continue;
+        $host_domain = parse_url($onion_url)['host'] ?? '';
+        
+        if ($http_code !== 200 || !$json_response) {
+            echo "    [!] Node Offline or Timeout: " . $host_domain . "\n";
+            continue;
+        }
 
         $feed = json_decode($json_response, true);
         if (!$feed || !isset($feed['posts'])) continue;
 
-        // 🤝 MUTUAL BADGE TRACKING
+        echo "    [>] Syncing Node: " . $host_domain . "\n";
+
         $my_clean_url = rtrim($config['node_url'], '/');
         $is_mutual = (strpos($json_response, $my_clean_url) !== false) ? 1 : 0;
         $remote_pub_key = $feed['public_key'] ?? null;
+        $remote_pq_pub = $feed['pq_public'] ?? null;
 
         if ($remote_pub_key) {
-            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, is_mutual = :mut WHERE onion_url = :url");
-            $stmt_key->execute([':pub' => $remote_pub_key, ':mut' => $is_mutual, ':url' => $onion_url]);
+            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, pq_public = :pq, is_mutual = :mut WHERE onion_url = :url");
+            $stmt_key->execute([':pub' => $remote_pub_key, ':pq' => $remote_pq_pub, ':mut' => $is_mutual, ':url' => $onion_url]);
         } else {
             $stmt_key = $db->prepare("UPDATE following SET is_mutual = :mut WHERE onion_url = :url");
             $stmt_key->execute([':mut' => $is_mutual, ':url' => $onion_url]);
@@ -121,20 +169,70 @@ try {
                 $is_decrypted_successfully = false;
                 $is_burner_received = false;
 
-                if (strpos($raw_content, 'E2EE:') === 0 || strpos($raw_content, 'E2EE-BURNER:') === 0) {
+                $is_hybrid = false;
+                $is_e2ee = false;
+
+                // 🔮 Deteksi Amplop Hibrida vs Amplop Klasik
+                if (strpos($raw_content, 'HYBRID:') === 0 || strpos($raw_content, 'HYBRID-BURNER:') === 0) {
+                    $is_hybrid = true;
+                    $is_burner_received = (strpos($raw_content, 'HYBRID-BURNER:') === 0);
+                    $offset = $is_burner_received ? 14 : 7;
+                } elseif (strpos($raw_content, 'E2EE:') === 0 || strpos($raw_content, 'E2EE-BURNER:') === 0) {
+                    $is_e2ee = true;
                     $is_burner_received = (strpos($raw_content, 'E2EE-BURNER:') === 0);
                     $offset = $is_burner_received ? 12 : 5;
-                    $ciphertext = base64_decode(substr($raw_content, $offset));
-                    
-                    $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
+                }
+
+                if ($is_hybrid || $is_e2ee) {
+                    $payload_str = substr($raw_content, $offset);
+                    $decrypted = false;
+
+                    if ($is_hybrid) {
+                        $parts = explode('::', $payload_str);
+                        if (count($parts) === 3) {
+                            $nonce = base64_decode($parts[0]);
+                            $kem_layer2 = base64_decode($parts[1]);
+                            $ciphertext = base64_decode($parts[2]);
+
+                            // 🔓 PEMBONGKARAN BRANKAS 3 LAPIS
+                            // Buka Amplop Lapis 2 (Kunci Kuantum / Mockup)
+                            $kem_layer1 = false;
+                            if ($my_pq_keypair) {
+                                $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
+                            }
+                            if ($kem_layer1 === false) {
+                                // Fallback: Kawan menggunakan node versi lama tanpa PQ Key
+                                $kem_layer1 = $kem_layer2; 
+                            }
+
+                            // Buka Amplop Lapis 1 (Kunci Libsodium Standar)
+                            $sym_key = sodium_crypto_box_seal_open($kem_layer1, $my_keypair);
+
+                            if ($sym_key !== false) {
+                                // Buka Muatan Utama (XChaCha20-Poly1305) menggunakan Kunci Simetris Ephemeral
+                                $decrypted = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $sym_key);
+                            }
+                        }
+                    } else {
+                        // 🔙 MUNDUR KE KLASIK: Membaca E2EE versi lama jika pengirim masih di v5.0
+                        $ciphertext = base64_decode($payload_str);
+                        $decrypted = sodium_crypto_box_seal_open($ciphertext, $my_keypair);
+                    }
+
                     if ($decrypted !== false) {
+                        // 🛡️ FITUR 1: STRIP PADDING (OpSec v6.0)
+                        $noise_pos = strpos($decrypted, "\n[::NOISE::]");
+                        if ($noise_pos !== false) {
+                            $decrypted = substr($decrypted, 0, $noise_pos);
+                        }
+
                         $prefix_text = $is_burner_received ? "[🔥 BURNER DROP - DESTROYED UPON READING]\n" : "[🔓 DECRYPTED PRIVATE DROP]\n";
                         $raw_content = $prefix_text . $decrypted;
                         $is_decrypted_successfully = true; 
                         
                         // 📡 TELEGRAM BRIDGE DM TRIGGER
                         if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
-                            $tipe_pesan = $is_burner_received ? "🔥 BURNER DROP" : "🔓 PRIVATE DROP";
+                            $tipe_pesan = $is_burner_received ? "🔥 HYBRID BURNER" : "🔓 HYBRID DROP";
                             $msg_tg = "INBOX NODE: 1 $tipe_pesan berhasil didekripsi dari @" . $author_name;
                             
                             $url_tg = "https://api.telegram.org/bot" . $config['tg_token'] . "/sendMessage";
@@ -147,7 +245,7 @@ try {
                             curl_close($chTg);
                         }
                     } else {
-                        $raw_content = "[🔒 ENCRYPTED CIPHERTEXT] // This message is securely locked.";
+                        $raw_content = "[🔒 ENCRYPTED HYBRID CIPHERTEXT] // This message is securely locked inside a 3-layer vault.";
                         $is_burner_received = false;
                     }
                 }
@@ -178,8 +276,10 @@ try {
         }
 
         $db->prepare("UPDATE following SET last_pulled = CURRENT_TIMESTAMP WHERE onion_url = :url")->execute([':url' => $onion_url]);
-        echo "    [+] Extracted $new_posts_count new signals from @$author_name.\n\n";
+        echo "    [+] Extracted $new_posts_count new signals.\n";
     }
+    
+    curl_multi_close($multi_handle);
 
     $db->exec("DELETE FROM ping_queue");
     $db->exec("DELETE FROM timeline WHERE is_local = 0 AND id NOT IN (SELECT id FROM timeline WHERE is_local = 0 ORDER BY created_at DESC LIMIT 2000)");
@@ -188,7 +288,7 @@ try {
     echo "\n[CRITICAL ERROR] " . $e->getMessage() . "\n";
 }
 
-echo "============================================\n";
+echo "\n============================================\n";
 echo "   WORKER CYCLE COMPLETE\n";
 echo "============================================\n";
 ?>

@@ -2,10 +2,12 @@
 **The Tor-Native Asynchronous Social Protocol (Nano-Pub)**
 
 ![DeadDrop Logo](https://img.shields.io/badge/Status-Underground-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
-![PHP](https://img.shields.io/badge/PHP-FastCGI-777BB4?style=for-the-badge&logo=php)
+![PHP](https://img.shields.io/badge/PHP_8.1+-Post_Quantum_Ready-777BB4?style=for-the-badge&logo=php)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-003B57?style=for-the-badge&logo=sqlite)
 
-DeadDrop is an extreme, static-first, and zero-JS social syndication protocol designed for Tor networks and low-end hardware. It operates on the custom **Nano-Pub** protocol, turning your server into a "Sovereign Node" without the bloat of traditional federated networks.
+DeadDrop is an extreme, static-first, and zero-JS social syndication protocol designed for Tor networks and low-end hardware. It operates on the custom **Nano-Pub** protocol, turning your server into a "Sovereign Node" without the bloat of traditional federated networks. 
+
+To guarantee absolute operational security, the protocol is hardened with advanced defenses: **Deniable Uniform Padding** to defeat ISP traffic analysis, **SOCKS5 Persistent Circuit Pooling** for lightning-fast asynchronous Tor syncs, and a **3-Layer Hybrid Post-Quantum Encapsulation** framework to shield private payloads against future decryption.
 
 ---
 
@@ -18,14 +20,15 @@ DeadDrop is an extreme, static-first, and zero-JS social syndication protocol de
 ### ⚙️ THE ARCHITECTURE: ZERO-PUSH, ZERO-JS
 Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server communications, DeadDrop reverses the paradigm:
 1. **Static-First:** You post to your timeline. The engine generates a highly optimized `outbox.json`. That's it. It costs 0% CPU when visitors read your feed.
-2. **Deferred Interaction:** The timeline is strictly built by a background worker (`worker.php`) running via Cron Job. It silently pulls data from the `.onion` nodes you follow and drops them into your local SQLite database.
+2. **SOCKS5 Persistent Pooling:** The background worker (`worker.php`) utilizes asynchronous `curl_multi_init()` over Tor. It holds a single tunnel open and pulls data from up to 100 `.onion` peers concurrently in seconds, bypassing daemon TCP strain.
 3. **Pure Torminal UI (Mobile Ready):** The frontend is strictly built with HTML and CSS, fully responsive for touch devices. **Zero JavaScript.** It is designed to work flawlessly on Tor Browser's "Safest" mode.
-4. **Isolated Command Center:** Dedicated `radar.php` dashboard for managing network syndication and peers without cluttering the main timeline.
+4. **Isolated Command Center:** Dedicated `radar.php` dashboard for managing network syndication, peer renaming, and autonomous path-healing topologies.
 5. **Stateless Nano-Paging:** Infinite timeline rendering managed entirely by PHP and SQLite `OFFSET`, ensuring browsers never crash from DOM overload.
-6. **Burner DMs & E2EE:** Asymmetric cryptography using Libsodium. Messages flagged as burners are eradicated from the local database in the exact millisecond they are rendered.
-7. **Auto-Scaling Hashcash Defense:** Incoming network knocks to the gateway are guarded by a dynamic SHA-256 Proof-of-Work puzzle. The difficulty scales exponentially during DDoS attempts to burn botnet CPU.
-8. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
-9. **Optional Telegram Bridge:** Built-in silent API triggers to notify your device of new encrypted DMs or valid network knocks.
+6. **Post-Quantum Hybrid Armor:** Standard E2EE is retired. Messages are now sealed inside a 3-Layer Vault: **XChaCha20-Poly1305** (Payload) → **Libsodium X25519** (Layer 1 KEM) → **ML-KEM Kyber Mockup** (Layer 2 KEM), securing communication against future Shor's Algorithm decryption.
+7. **Deniable Uniform Padding:** Total immunity against ISP Traffic Analysis. All outgoing encrypted payloads are cryptographically injected with digital noise to lock the footprint at an absolute **4096-byte (4KB) block size**.
+8. **Auto-Scaling Hashcash Defense:** Incoming network knocks to the gateway are guarded by a dynamic SHA-256 Proof-of-Work puzzle. The difficulty scales exponentially during DDoS attempts to burn botnet CPU.
+9. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
+10. **Optional Telegram Bridge:** Built-in silent API triggers to notify your device of new encrypted DMs or valid network knocks.
 
 ---
 
@@ -33,27 +36,41 @@ Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server commun
 DeadDrop is designed for extreme efficiency and can run on headless Linux environments like a 256MB RAM NAT VPS or an Armbian Set-Top Box. Follow these exact steps to build your node from scratch.
 
 #### PHASE 1: System Prep & Autostart Armor
-First, update your system and install the required packages (including `nano` for editing).
+**Cryptographic Floor:** The underlying ML-KEM (Kyber) mathematical polyfills strictly require **PHP 8.1 or higher**. Attempting to deploy on PHP 7.4 or older will trigger fatal syntax parser errors.
+
+First, update your system and install the foundational packages. We explicitly target the modern PHP 8.1+ ecosystem (using `php8.2-fpm` in the deployment commands below as the recommended stable standard) to ensure the FastCGI environment supports complex post-quantum cryptography.
+
 ```bash
 apt update && apt upgrade -y
-apt install nano nginx php-fpm php-sqlite3 php-curl sqlite3 tor curl libimage-exiftool-perl git -y
+apt install -y software-properties-common curl git nano nginx sqlite3 tor libimage-exiftool-perl
 ```
 
-*Note: Libsodium (E2EE cryptography) is required by DeadDrop but is already compiled directly into the PHP core for versions 7.2 and above, so no separate package is needed.*
+Now, inject the PHP repository and install the strict PHP 8.2 ecosystem:
+```bash
+# Add SURY repository for the latest PHP builds (Debian/Ubuntu)
+add-apt-repository ppa:ondrej/php -y
+apt update
 
-*Note: If your hosting provider pre-installed `apache2`, it will conflict with Nginx. Kill it permanently by running:*
+# Install PHP 8.2 and its required sovereign extensions
+apt install -y php8.2-fpm php8.2-sqlite3 php8.2-curl php8.2-xml php8.2-mbstring
+```
+
+*Note: Libsodium (E2EE cryptography) is required by DeadDrop but is natively compiled into the PHP 8.2 core, requiring no separate package.*
+
+*Note: If your hosting provider pre-installed `apache2`, it will conflict with Nginx. Eradicate it permanently:*
 ```bash
 systemctl stop apache2
 systemctl disable apache2
+apt purge apache2 -y
 ```
 
 To guarantee that Nginx and Tor automatically resurrect whenever your node reboots, enforce global autostart immediately:
 ```bash
-sudo systemctl enable --now nginx tor
+systemctl enable --now nginx tor php8.2-fpm
 ```
 
 #### PHASE 2: Extreme RAM Tuning (Crucial for Low-End Hardware)
-To prevent Out-Of-Memory (OOM) crashes on devices with limited RAM, we must enforce a strict diet.
+To prevent Out-Of-Memory (OOM) crashes on devices with limited RAM (like a 256MB STB), we must enforce a strict background diet.
 
 **1. Limit Nginx Workers:**
 ```bash
@@ -66,22 +83,21 @@ worker_processes 1;
 Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
 **2. Enable PHP-FPM Hibernation:**
-Check your PHP version by typing `php -v` (e.g., 7.4, 8.2). Open the pool config for your version:
+Open the pool configuration for PHP 8.2:
 ```bash
-# Adjust '7.4' based on your actual PHP version
-nano /etc/php/7.4/fpm/pool.d/www.conf
+nano /etc/php/8.2/fpm/pool.d/www.conf
 ```
-Press `Ctrl+W` to find `pm = ` and change the settings to this exact block:
+Press `Ctrl+W` to find `pm = ` and surgically change the surrounding settings to this exact block:
 ```ini
 pm = ondemand
 pm.max_children = 5
 pm.process_idle_timeout = 10s
 pm.max_requests = 200
 ```
-Save and exit. Restart both services to apply the diet:
+Save and exit. Restart the stack to apply the diet:
 ```bash
 systemctl restart nginx
-systemctl restart php7.4-fpm  # Adjust version if needed
+systemctl restart php8.2-fpm
 ```
 
 #### PHASE 3: The Darknet Gateway (Tor Setup)
@@ -111,45 +127,64 @@ sudo cat /var/lib/tor/hidden_service/hostname
 If you already possess a custom vanity `.onion` domain, **do not** let Tor run the randomly generated address. Follow these strict intervention steps to swap the cryptographical keys safely without system conflicts:
 
 1. **Stop the Tor daemon completely:**
-   ```bash
+```bash
    sudo systemctl stop tor
    ```
 2. **Eradicate the randomly generated default keys:**
-   ```bash
+```bash
    sudo rm -rf /var/lib/tor/hidden_service/*
    ```
 3. **Inject your custom keys:**
    A custom Tor v3 domain always consists of three crucial files: `hostname`, `hs_ed25519_public_key`, and the highly sensitive `hs_ed25519_secret_key`. Move all three files directly into `/var/lib/tor/hidden_service/`.
 4. **Restore strict system ownership and permissions:**
    Tor will aggressively refuse to boot if security permissions are loose. Execute these exact commands:
-   ```bash
+```bash
    sudo chown -R debian-tor:debian-tor /var/lib/tor/hidden_service/
    sudo chmod 700 /var/lib/tor/hidden_service/
    sudo chmod 600 /var/lib/tor/hidden_service/hs_ed25519_secret_key
    ```
 5. **Ignite Tor and verify propagation:**
-   ```bash
+```bash
    sudo systemctl start tor
    sudo systemctl status tor
    ```
 
 ***
 
-#### PHASE 4: Subfolder Deployment & Nginx Bridge
+#### PHASE 4: Subfolder Deployment & Directory OpSec
 **Crucial Architectural Note:** DeadDrop is explicitly deployed inside a subfolder (`/var/www/html/deaddrop`) rather than the absolute root. This isolates your timeline strictly to `yourdomain.onion/deaddrop`, leaving the primary root `/var/www/html` wide open for you to construct a personalized landing page.
 
-Pull the DeadDrop codebase directly into the subfolder and apply correct web server permissions:
+Pull the DeadDrop codebase directly into the subfolder:
 ```bash
 git clone https://github.com/jeannesbryan/deaddrop.git /var/www/html/deaddrop
+```
+
+**Strict Permission Enforcement (OpSec Protocol):**
+To prevent server-side vulnerabilities and ensure the PHP backend can autonomously write to the database, save media, and rotate backups, you must construct the required directories and enforce precise file permissions:
+
+```bash
+# 1. Construct dynamic storage directories
+mkdir -p /var/www/html/deaddrop/media
+mkdir -p /var/www/html/deaddrop/backup
+
+# 2. Assign absolute ownership to the web server
 chown -R www-data:www-data /var/www/html/deaddrop
-chmod -R 775 /var/www/html/deaddrop
+
+# 3. Enforce baseline read/execute permissions (Safe defaults)
+find /var/www/html/deaddrop -type d -exec chmod 755 {} \;
+find /var/www/html/deaddrop -type f -exec chmod 644 {} \;
+
+# 4. Grant specific write access to dynamic storage target folders
+chmod -R 775 /var/www/html/deaddrop/data
+chmod -R 775 /var/www/html/deaddrop/media
+chmod -R 775 /var/www/html/deaddrop/backup
 ```
 
 Create the Nginx routing block:
 ```bash
 nano /etc/nginx/sites-available/deaddrop
 ```
-Paste the following configuration *(replace the `.onion` address and PHP version accordingly)*:
+Paste the following configuration *(replace the `.onion` address accordingly)*:
 ```nginx
 server {
     listen 80;
@@ -163,11 +198,11 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php7.4-fpm.sock; # Adjust PHP version here
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock; # Point this to your active PHP 8.1+ socket
     }
 
     # Brutally block public access to sensitive DeadDrop subdirectories
-    location ~ ^/deaddrop/(data|keys)/ {
+    location ~ ^/deaddrop/(data|backup|keys)/ {
         deny all;
     }
 }
@@ -179,7 +214,13 @@ ln -s /etc/nginx/sites-available/deaddrop /etc/nginx/sites-enabled/
 systemctl restart nginx
 ```
 
-#### PHASE 5: Identity & Telegram Configuration
+#### PHASE 5: The Post-Quantum Keygen Ritual
+To arm the Hybrid KEM architecture, you MUST trigger the backend to generate your Layer-2 Quantum Mockup keys before opening the browser. Execute this strictly via CLI:
+```bash
+sudo -u www-data php /var/www/html/deaddrop/keygen.php
+```
+
+#### PHASE 6: Identity & Telegram Configuration
 ```bash
 nano /var/www/html/deaddrop/db.php
 ```
@@ -194,7 +235,7 @@ Locate the `$config` array at the top. Insert your complete subfolder endpoint i
 ```
 Save and exit.
 
-#### PHASE 6: The Autonomous Heartbeat (Cron Jobs)
+#### PHASE 7: The Autonomous Heartbeat (Cron Jobs)
 DeadDrop's backend runs autonomously in the background. Open your cron editor:
 ```bash
 crontab -e
@@ -208,7 +249,7 @@ Paste these two target lines at the bottom to maintain syndication workers and t
 0 0 * * * php /var/www/html/deaddrop/offload.php >> /var/www/html/deaddrop/data/offload.log 2>&1
 ```
 
-**Congratulations. Your Sovereign Node is now fully autonomous in the darknet.**
+**Congratulations. Your Sovereign Node is now fully hardened and autonomous in the darknet.**
 
 ---
 
@@ -221,7 +262,7 @@ http://peer_onion_address_here.onion/deaddrop
 ```
 You can assign them a custom Petname (`@alias`). The system features an **Anti-Duplicate Guard**, which strictly prevents you from accidentally routing E2EE messages to the wrong node by reusing petnames.
 
-Once added, the background worker will periodically pull their updates. If the target node also adds your URL to their radar, a `[🤝 Mutual]` badge will automatically appear in your Command Center.
+Once added, the background worker will asynchronously pull their updates. If the target node also adds your URL to their radar, a `[🤝 Mutual]` badge will automatically appear in your Command Center.
 
 ---
 

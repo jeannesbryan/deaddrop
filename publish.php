@@ -33,32 +33,71 @@ if ($ttl_hours > 0) {
     $expires_at = gmdate('Y-m-d\TH:i:s\Z', strtotime("+$ttl_hours hours"));
 }
 
-// 🔐 PHASE 1 E2EE: PURE TOR PETNAME & ENCRYPTION
+// 🔐 PHASE 1: HYBRID KEM ENVELOPE (XChaCha20 + X25519 + PQ Mockup)
 $target = trim(strip_tags($_POST['target'] ?? ''));
 $is_e2ee = false;
-$is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1'); // Deteksi Burner
+$is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1');
 
 if (!empty($target)) {
     $is_e2ee = true;
+    
+    // 1. Dapatkan Public Key (Lapis 1) dan PQ Public Key (Lapis 2) milik Target
     if (strpos($target, '@') === 0) {
         $alias = substr($target, 1);
-        $stmt_key = $db->prepare("SELECT public_key FROM following WHERE alias = :alias LIMIT 1");
+        $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE alias = :alias LIMIT 1");
         $stmt_key->execute([':alias' => $alias]);
-        $target_pub_key = $stmt_key->fetchColumn();
-        if (empty($target_pub_key)) terminal_error("[ E2EE ERROR ] Alias not found.");
+        $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
+        if (!$target_keys) terminal_error("[ E2EE ERROR ] Alias not found.");
     } else {
-        $stmt_key = $db->prepare("SELECT public_key FROM following WHERE onion_url = :url LIMIT 1");
+        $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE onion_url = :url LIMIT 1");
         $stmt_key->execute([':url' => rtrim($target, '/')]);
-        $target_pub_key = $stmt_key->fetchColumn();
-        if (empty($target_pub_key)) terminal_error("[ E2EE ERROR ] Target Public Key not found.");
+        $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
+        if (!$target_keys) terminal_error("[ E2EE ERROR ] Target Public Key not found.");
     }
 
-    $binary_target_pub = base64_decode($target_pub_key);
-    $encrypted_binary = sodium_crypto_box_seal($content, $binary_target_pub);
+    $target_pub_key = base64_decode($target_keys['public_key']);
+    $target_pq_pub  = !empty($target_keys['pq_public']) ? base64_decode($target_keys['pq_public']) : null;
+
+    // ==========================================
+    // 🛡️ FITUR 1: DENIABLE UNIFORM PADDING
+    // ==========================================
+    $block_size = 4096; 
+    $delimiter = "\n[::NOISE::]";
+    $current_len = strlen($content);
+    $target_size = ceil(($current_len + strlen($delimiter) + 1) / $block_size) * $block_size;
+    $pad_len = $target_size - $current_len - strlen($delimiter);
+    if ($pad_len > 0) {
+        $noise = base64_encode(random_bytes($pad_len)); 
+        $content .= $delimiter . substr($noise, 0, $pad_len);
+    }
+    // ==========================================
+
+    // ==========================================
+    // 🔮 FITUR 3: THE HYBRID ENCAPSULATION
+    // ==========================================
+    // A. Buat Kunci Simetris sekali pakai (XChaCha20) untuk data utama
+    $sym_key = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES);
+    $nonce   = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
     
-    // Injeksi tag Burner di ciphertext
-    $prefix = $is_burner ? 'E2EE-BURNER:' : 'E2EE:';
-    $content = $prefix . base64_encode($encrypted_binary);
+    // B. Gembok Data Utama dengan Kunci Simetris tersebut
+    $ciphertext = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt($content, '', $nonce, $sym_key);
+
+    // C. KEM Layer 1: Gembok Kunci Simetris dengan Libsodium Target
+    $kem_layer1 = sodium_crypto_box_seal($sym_key, $target_pub_key);
+
+    // D. KEM Layer 2: Gembok Layer 1 dengan Kunci Kuantum Target (Jika node target sudah upgrade)
+    if ($target_pq_pub) {
+        $kem_layer2 = sodium_crypto_box_seal($kem_layer1, $target_pq_pub);
+    } else {
+        $kem_layer2 = $kem_layer1; // Backward compatibility untuk node versi lama
+    }
+
+    // E. Rakit Amplop Final: [Nonce] :: [KEM Encapsulated Key] :: [Ciphertext Payload]
+    $final_payload = base64_encode($nonce) . '::' . base64_encode($kem_layer2) . '::' . base64_encode($ciphertext);
+    // ==========================================
+
+    $prefix = $is_burner ? 'HYBRID-BURNER:' : 'HYBRID:';
+    $content = $prefix . $final_payload;
 }
 
 // 3. CAPTURE & PROCESS MEDIA
@@ -124,6 +163,10 @@ try {
         "author"       => $config['node_name'],
         "domain"       => $config['node_url'],
         "public_key"   => $config['public_key'],
+        
+        // 🔮 FITUR 3: PQC Public Key Broadcast
+        "pq_public"    => $config['pq_public'] ?? null, 
+        
         "last_updated" => $now_utc,
         "posts"        => $my_posts
     ];
