@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: TOMBSTONE PROTOCOL (v7.0 - Zero-JS Eradication)
+// 🏴‍☠️ DEADDROP: TOMBSTONE PROTOCOL (v9.0 - Anti-Forensics Shredder)
 // ==========================================
 require_once 'db.php';
 
@@ -46,12 +46,13 @@ try {
         terminal_error("[ ERROR ] Signal not found or unauthorized to destroy external node data.");
     }
 
-    // 2. PURGE ASSOCIATED MEDIA FROM eMMC
+    // 2. PURGE ASSOCIATED MEDIA FROM eMMC (PHYSICAL DATA VAPORIZATION)
     if (!empty($post['media_url'])) {
         $file_name = basename($post['media_url']);
         $file_path = __DIR__ . '/media/' . $file_name;
         if (file_exists($file_path)) {
-            @unlink($file_path);
+            // shred -u (remove), -z (zero out), -n 3 (3 passes)
+            exec('shred -u -z -n 3 ' . escapeshellarg($file_path));
         }
     }
 
@@ -75,7 +76,6 @@ try {
     $my_posts = $stmt_out->fetchAll(PDO::FETCH_ASSOC);
 
     // 🛡️ CRITICAL SECURITY PATCH: SURGICAL INTERVENTION FOR SPLIT-LEDGER
-    // Prevents plaintext leak during outbox rebuild after deletion!
     foreach ($my_posts as &$export_item) {
         if (strpos($export_item['content'], '[[SPLIT_LEDGER]]') !== false) {
             $ledger_parts = explode('[[SPLIT_LEDGER]]', $export_item['content']);

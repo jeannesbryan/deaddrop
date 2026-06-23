@@ -1,19 +1,33 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v7 - Black Site Protocol)
+// 🏴‍☠️ DEADDROP: THE HOLOGRAM (v9.0 - Social Graph Obfuscation)
 // ==========================================
 require_once 'db.php';
 
 $status_msg = '';
 $alert_type = 'success';
 
+// 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY
+function decrypt_alias($payload, $key_string) {
+    if (strpos($payload, 'ENC:') !== 0) return $payload; 
+    $data = base64_decode(substr($payload, 4));
+    if (strlen($data) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) return "[ENCRYPTED_BLOB]";
+    $nonce = substr($data, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = substr($data, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = hash('sha256', $key_string, true);
+    $dec = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
+    return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
+}
+
 // 🔐 BLACK SITE AUTHENTICATION (THE VOID)
 $unlocked = false;
 $unlock_error = '';
+$master_key = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
     if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
         $unlocked = true;
+        $master_key = $_POST['unlock_pass']; // Capture key for volatile decryption
         $status_msg = "[+] BLACK SITE UNLOCKED: GLOBAL TIMELINE EXTRAPOLATED";
     } else {
         $unlock_error = "[!] AUTHENTICATION FAILED: INVALID MASTER KEY.";
@@ -35,9 +49,10 @@ $limit = 100;
 $offset = ($page - 1) * $limit;
 
 $feeds = [];
+$alias_map = [];
 $total_pages = 1;
 
-// 🛡️ ZERO-LEAK QUERY: Hanya ekstrak database jika brankas terbuka!
+// 🛡️ ZERO-LEAK QUERY & ON-THE-FLY ALIAS DECRYPTION
 if ($unlocked) {
     try {
         $total_feeds = $db->query("SELECT COUNT(*) FROM timeline")->fetchColumn();
@@ -46,17 +61,36 @@ if ($unlocked) {
 
         $query = $db->query("SELECT * FROM timeline ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
         $feeds = $query->fetchAll(PDO::FETCH_ASSOC);
+
+        // 🔮 DECRYPT RADAR ALIASES ON THE FLY
+        $stmt_alias = $db->query("SELECT onion_url, alias FROM following");
+        foreach ($stmt_alias->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $alias_map[$row['onion_url']] = decrypt_alias($row['alias'], $master_key);
+        }
+
+        // Apply Petnames silently to the UI
+        foreach ($feeds as &$post) {
+            if ($post['is_local'] == 0 && isset($alias_map[$post['author_host']])) {
+                $post['author_name'] = '@' . $alias_map[$post['author_host']];
+            }
+        }
     } catch (PDOException $e) {
         $feeds = [];
         $total_pages = 1;
     }
 }
 
-function get_parent_post($db, $reply_to_id) {
+function get_parent_post($db, $reply_to_id, $alias_map = []) {
     try {
-        $stmt = $db->prepare("SELECT author_name, content FROM timeline WHERE remote_id = :rid LIMIT 1");
+        $stmt = $db->prepare("SELECT author_name, author_host, content FROM timeline WHERE remote_id = :rid LIMIT 1");
         $stmt->execute([':rid' => $reply_to_id]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        $parent = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($parent && isset($alias_map[$parent['author_host']])) {
+            $parent['author_name'] = '@' . $alias_map[$parent['author_host']];
+        }
+        
+        return $parent;
     } catch (PDOException $e) {
         return false;
     }
@@ -184,7 +218,7 @@ function get_parent_post($db, $reply_to_id) {
                         
                         <?php 
                         if (!empty($post['reply_to'])): 
-                            $parent = get_parent_post($db, $post['reply_to']);
+                            $parent = get_parent_post($db, $post['reply_to'], $alias_map);
                             if ($parent):
                         ?>
                             <div class="thread-quote">

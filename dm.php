@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: SECURE INBOX (v7.0 - Black Site & Zero-Knowledge RAM Vault)
+// 🏴‍☠️ DEADDROP: SECURE INBOX (v9.0 - Social Graph Obfuscation)
 // ==========================================
 require_once 'db.php';
 
@@ -10,15 +10,29 @@ if (isset($_GET['status'])) {
     if ($_GET['status'] === 'destroyed') $status_msg = "TOMBSTONE PROTOCOL ENGAGED: SECURE DROP DESTROYED";
 }
 
+// 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY
+function decrypt_alias($payload, $key_string) {
+    if (strpos($payload, 'ENC:') !== 0) return $payload; 
+    $data = base64_decode(substr($payload, 4));
+    if (strlen($data) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) return "[ENCRYPTED_BLOB]";
+    $nonce = substr($data, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = substr($data, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = hash('sha256', $key_string, true);
+    $dec = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
+    return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
+}
+
 // 🔐 VOLATILE RAM DECRYPTION & BLACK SITE AUTHENTICATION
 $unlocked = false;
 $unlock_error = '';
 $my_keypair = null;
 $my_pq_keypair = null;
+$master_key = ''; // Capture key for alias decryption
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
     if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
         $unlocked = true;
+        $master_key = $_POST['unlock_pass'];
         $status_msg = "VAULT UNLOCKED IN RAM // VOLATILE EXTRAPOLATION ACTIVE";
         
         $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
@@ -41,9 +55,10 @@ $limit = 100;
 $offset = ($page - 1) * $limit;
 
 $feeds = [];
+$alias_map = [];
 $total_pages = 1;
 
-// 🛡️ ZERO-LEAK QUERY: Data is only extracted if vault is unlocked!
+// 🛡️ ZERO-LEAK QUERY & ON-THE-FLY ALIAS DECRYPTION
 if ($unlocked) {
     try {
         $total_feeds = $db->query("SELECT COUNT(*) FROM inbox")->fetchColumn();
@@ -53,13 +68,27 @@ if ($unlocked) {
         $query = $db->query("SELECT * FROM inbox ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
         $feeds = $query->fetchAll(PDO::FETCH_ASSOC);
 
-        // 🔥 DELAYED BURNER PROTOCOL (Self-Destruct on read)
+        // 🔮 DECRYPT RADAR ALIASES ON THE FLY
+        $stmt_alias = $db->query("SELECT onion_url, alias FROM following");
+        foreach ($stmt_alias->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $alias_map[$row['onion_url']] = decrypt_alias($row['alias'], $master_key);
+        }
+
+        // 🔥 DELAYED BURNER PROTOCOL & ALIAS MAPPING
         $burner_ids = [];
-        foreach ($feeds as $post) {
+        foreach ($feeds as &$post) {
+            // Map decrypted alias
+            if ($post['is_local'] == 0 && isset($alias_map[$post['author_host']])) {
+                $post['author_name'] = '@' . $alias_map[$post['author_host']];
+            }
+            
+            // Queue burners for destruction
             if ($post['status'] === 'burner' && $post['is_local'] == 0) {
                 $burner_ids[] = $post['id'];
             }
         }
+        
+        // Exterminate burners from eMMC
         if (!empty($burner_ids)) {
             $placeholders = implode(',', array_fill(0, count($burner_ids), '?'));
             $stmt_burn = $db->prepare("DELETE FROM inbox WHERE id IN ($placeholders)");
@@ -71,11 +100,17 @@ if ($unlocked) {
     }
 }
 
-function get_parent_post($db, $reply_to_id) {
+function get_parent_post($db, $reply_to_id, $alias_map = []) {
     try {
-        $stmt = $db->prepare("SELECT author_name, content FROM timeline WHERE remote_id = :rid LIMIT 1");
+        $stmt = $db->prepare("SELECT author_name, author_host, content FROM timeline WHERE remote_id = :rid LIMIT 1");
         $stmt->execute([':rid' => $reply_to_id]);
-        return $stmt->fetch(PDO::FETCH_ASSOC);
+        $parent = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($parent && isset($alias_map[$parent['author_host']])) {
+            $parent['author_name'] = '@' . $alias_map[$parent['author_host']];
+        }
+        
+        return $parent;
     } catch (PDOException $e) {
         return false;
     }
@@ -211,7 +246,7 @@ function get_parent_post($db, $reply_to_id) {
                         
                         <?php 
                         if (!empty($post['reply_to'])): 
-                            $parent = get_parent_post($db, $post['reply_to']);
+                            $parent = get_parent_post($db, $post['reply_to'], $alias_map);
                             if ($parent):
                         ?>
                             <div class="thread-quote">
@@ -224,16 +259,16 @@ function get_parent_post($db, $reply_to_id) {
                             endif;
                         endif;
 
-                        // 🔓 PURE V6.0/V7.0 EXTRAPOLATION LOGIC
+                        // 🔓 PURE EXTRAPOLATION LOGIC
                         $display_content = $post['content'];
                         $is_render_dimmed = false;
 
-                        // 1. CEK DOUBLE-LEDGER (Pesan Keluar v6.0 Murni)
+                        // 1. CEK DOUBLE-LEDGER (Pesan Keluar Murni)
                         if ($post['is_local'] == 1 && strpos($display_content, '[[SPLIT_LEDGER]]') !== false) {
                             $ledger_parts = explode('[[SPLIT_LEDGER]]', $display_content);
                             $display_content = "[🔓 DECRYPTED OUTGOING DROP]\n\n" . $ledger_parts[0];
                         } 
-                        // 2. CEK CIPHERTEXT MASUK (Strictly v6.0 HYBRID Framework)
+                        // 2. CEK CIPHERTEXT MASUK (Strictly HYBRID Framework)
                         elseif (strpos($display_content, 'HYBRID:') === 0 || strpos($display_content, 'HYBRID-BURNER:') === 0) {
                             $is_burner_drop = (strpos($display_content, 'HYBRID-BURNER:') === 0);
                             $offset = $is_burner_drop ? 14 : 7;

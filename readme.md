@@ -32,6 +32,8 @@ Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server commun
 11. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
 12. **Airgapped Telegram Bridge:** Built-in silent API triggers to notify your mobile device of new authenticated DMs or valid gateway intrusions. All API dispatches are strictly routed through the Tor SOCKS5 proxy to guarantee zero clearnet IP leaks.
 13. **Cron Jitter (Anti-Timing Analysis):** Background daemons autonomously inject randomized sleep delays (1-10 minutes) before execution to defeat data center traffic analysis and chronometric tracking.
+14. **Physical Data Vaporization:** Deletions are absolute. SQLite uses `PRAGMA secure_delete = FAST;` to overwrite purged messages with zeros, while media files are brutally destroyed using native Linux `shred` (3-pass overwrite) to defeat forensic disk recovery.
+15. **Social Graph Obfuscation:** Your address book is classified. Peer aliases (Petnames) are symmetrically encrypted at rest using Libsodium. Forensic analysis of the database reveals zero human-readable relational data.
 
 ---
 

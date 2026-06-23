@@ -27,20 +27,24 @@ try {
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->setAttribute(PDO::ATTR_TIMEOUT, 5); 
 
-    // SQLite Performance & Concurrency Tuning
+    // SQLite Performance, Concurrency & ANTI-FORENSICS Tuning
     $db->exec("PRAGMA journal_mode = WAL;");
     $db->exec("PRAGMA synchronous = NORMAL;");
     $db->exec("PRAGMA busy_timeout = 3000;");
+    
+    // 🔥 DATA VAPORIZATION PROTOCOL
+    // Forces SQLite to overwrite deleted content with zeros on the physical disk
+    $db->exec("PRAGMA secure_delete = FAST;");
 
-    // 🏗️ 3. PURE V6.0 ARCHITECTURE (Legacy Alter Tables Eradicated)
+    // 🏗️ 3. PURE ARCHITECTURE
     $db->exec("CREATE TABLE IF NOT EXISTS timeline (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         remote_id TEXT UNIQUE,        
-        author_name TEXT,             
-        author_host TEXT,             
-        content TEXT,                 
-        media_url TEXT,               
-        is_local INTEGER DEFAULT 0,   
+        author_name TEXT,              
+        author_host TEXT,              
+        content TEXT,                  
+        media_url TEXT,                
+        is_local INTEGER DEFAULT 0,    
         reply_to TEXT,
         status TEXT DEFAULT 'active',
         expires_at DATETIME DEFAULT NULL,
@@ -50,11 +54,11 @@ try {
     $db->exec("CREATE TABLE IF NOT EXISTS inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         remote_id TEXT UNIQUE,        
-        author_name TEXT,             
-        author_host TEXT,             
-        content TEXT,                 
-        media_url TEXT,               
-        is_local INTEGER DEFAULT 0,   
+        author_name TEXT,              
+        author_host TEXT,              
+        content TEXT,                  
+        media_url TEXT,                
+        is_local INTEGER DEFAULT 0,    
         reply_to TEXT,
         status TEXT DEFAULT 'active',
         expires_at DATETIME DEFAULT NULL,

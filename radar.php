@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: RADAR COMMAND CENTER (v7.0 - Black Site Protocol)
+// 🏴‍☠️ DEADDROP: RADAR COMMAND CENTER (v9.0 - Social Graph Obfuscation)
 // ==========================================
 require_once 'db.php';
 
@@ -10,6 +10,26 @@ $alert_type = 'success';
 // 🔐 BLACK SITE AUTHENTICATION & ACTION HANDLERS
 $unlocked = false;
 $unlock_error = '';
+$master_key = '';
+
+// 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY (LIBSODIUM)
+function encrypt_alias($plaintext, $key_string) {
+    $key = hash('sha256', $key_string, true);
+    $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = sodium_crypto_secretbox($plaintext, $nonce, $key);
+    return 'ENC:' . base64_encode($nonce . $ciphertext);
+}
+
+function decrypt_alias($payload, $key_string) {
+    if (strpos($payload, 'ENC:') !== 0) return $payload; // Backward compatibility for unencrypted legacy aliases
+    $data = base64_decode(substr($payload, 4));
+    if (strlen($data) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) return "[ENCRYPTED_BLOB]";
+    $nonce = substr($data, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = substr($data, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = hash('sha256', $key_string, true);
+    $dec = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
+    return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
@@ -17,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['unlock_pass'])) {
         if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
             $unlocked = true;
+            $master_key = $_POST['unlock_pass']; // Capture raw password for volatile symmetric derivation
             $status_msg = "[+] BLACK SITE UNLOCKED: COMMAND CENTER ONLINE";
             $alert_type = 'success';
         } else {
@@ -30,9 +51,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!password_verify($input_pass, $config['admin_hash'])) {
             sleep(1);
             $unlock_error = "[!] ACCESS DENIED: Invalid Secure Key.";
-            // $unlocked remains false, booting unauthorized access back to The Void
         } else {
-            $unlocked = true; // Valid action key = valid master key
+            $unlocked = true; 
+            $master_key = $input_pass;
 
             // INTERCEPT PEER LOCK (ADD PEER)
             if ($_POST['action'] === 'add_peer') {
@@ -50,15 +71,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $status_msg = "[!] PROTOCOL REJECTED: Only external Darknet (.onion) endpoints are allowed.";
                     $alert_type = 'danger';
                 } else {
-                    $stmt_check = $db->prepare("SELECT id FROM following WHERE alias = :alias OR onion_url = :url LIMIT 1");
-                    $stmt_check->execute([':alias' => $alias, ':url' => $peer_url]);
+                    $stmt_check = $db->prepare("SELECT id FROM following WHERE onion_url = :url LIMIT 1");
+                    $stmt_check->execute([':url' => $peer_url]);
                     
                     if ($stmt_check->fetch()) {
-                        $status_msg = "[!] ALIAS/URL LOCKED: Petname '@$alias' or URL is already strictly assigned in your radar.";
+                        $status_msg = "[!] URL LOCKED: URL is already strictly assigned in your radar.";
                         $alert_type = 'danger';
                     } else {
+                        $enc_alias = encrypt_alias($alias, $master_key);
                         $stmt = $db->prepare("INSERT INTO following (onion_url, alias) VALUES (:url, :alias)");
-                        $stmt->execute([':url' => $peer_url, ':alias' => $alias]);
+                        $stmt->execute([':url' => $peer_url, ':alias' => $enc_alias]);
                         $db->prepare("DELETE FROM ping_queue WHERE source_url = :url")->execute([':url' => $peer_url]);
                         
                         $status_msg = "[+] RADAR LOCKED: Successfully tracking petname @" . htmlspecialchars($alias);
@@ -85,25 +107,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $alias = preg_replace('/[^a-zA-Z0-9_-]/', '', $alias);
 
                 if (!empty($alias)) {
-                    $stmt_check = $db->prepare("SELECT id FROM following WHERE alias = :alias AND onion_url != :url LIMIT 1");
-                    $stmt_check->execute([':alias' => $alias, ':url' => $peer_url]);
+                    // DOCTRINE ENFORCEMENT: We strictly encrypt the alias inside the following table.
+                    // We DO NOT cascade this update to timeline/inbox to prevent plaintext leakage.
+                    $enc_alias = encrypt_alias($alias, $master_key);
+                    $stmt = $db->prepare("UPDATE following SET alias = :alias WHERE onion_url = :url");
+                    $stmt->execute([':alias' => $enc_alias, ':url' => $peer_url]);
                     
-                    if ($stmt_check->fetch()) {
-                        $status_msg = "[!] ALIAS LOCKED: Petname '@$alias' is already used by another node.";
-                        $alert_type = 'danger';
-                    } else {
-                        $stmt = $db->prepare("UPDATE following SET alias = :alias WHERE onion_url = :url");
-                        $stmt->execute([':alias' => $alias, ':url' => $peer_url]);
-                        
-                        $stmt_tl = $db->prepare("UPDATE timeline SET author_name = :alias WHERE author_host = :url");
-                        $stmt_tl->execute([':alias' => $alias, ':url' => $peer_url]);
-                        
-                        $stmt_ib = $db->prepare("UPDATE inbox SET author_name = :alias WHERE author_host = :url");
-                        $stmt_ib->execute([':alias' => $alias, ':url' => $peer_url]);
-                        
-                        $status_msg = "[+] ALIAS UPDATED: Node successfully renamed to @" . htmlspecialchars($alias);
-                        $alert_type = 'success';
-                    }
+                    $status_msg = "[+] ALIAS UPDATED: Node successfully renamed to @" . htmlspecialchars($alias);
+                    $alert_type = 'success';
                 }
             }
 
@@ -176,6 +187,11 @@ if ($unlocked) {
     try {
         $query_following = $db->query("SELECT * FROM following ORDER BY id DESC");
         $following_list = $query_following->fetchAll(PDO::FETCH_ASSOC);
+        
+        // DECRYPT ALIASES ON THE FLY FOR UI PRESENTATION
+        foreach ($following_list as &$peer) {
+            $peer['alias'] = decrypt_alias($peer['alias'], $master_key);
+        }
         
         $query_pings = $db->query("SELECT * FROM ping_queue ORDER BY received_at DESC");
         $ping_list = $query_pings->fetchAll(PDO::FETCH_ASSOC);

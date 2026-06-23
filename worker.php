@@ -1,13 +1,13 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (v8.0 - Airgapped Quantum Pool)
+// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (v9.0 - Airgapped & Anti-Forensics)
 // ==========================================
 require_once 'db.php';
 
 header('Content-Type: text/plain; charset=utf-8');
 
 echo "============================================\n";
-echo "   DEADDROP WORKER INITIATED (STRICT V8 HYBRID)\n";
+echo "   DEADDROP WORKER INITIATED (STRICT V9 HYBRID)\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
 
@@ -27,12 +27,15 @@ try {
     ");
     $expired_count = 0;
     foreach ($stmt_exp->fetchAll(PDO::FETCH_ASSOC) as $exp) {
-        if (!empty($exp['media_url'])) @unlink(__DIR__ . '/media/' . basename($exp['media_url']));
+        if (!empty($exp['media_url'])) {
+            $target_media = __DIR__ . '/media/' . basename($exp['media_url']);
+            if (file_exists($target_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_media));
+        }
         $db->exec("DELETE FROM timeline WHERE remote_id = '{$exp['remote_id']}'");
         $db->exec("DELETE FROM inbox WHERE remote_id = '{$exp['remote_id']}'");
         $expired_count++;
     }
-    if ($expired_count > 0) echo "    [+] Purged $expired_count expired ephemeral signals.\n\n";
+    if ($expired_count > 0) echo "    [+] Purged and shredded $expired_count expired ephemeral signals.\n\n";
 
     // 📡 GATHER TARGET NODES
     $target_urls = [];
@@ -130,7 +133,6 @@ try {
         $remote_pub_key = $feed['public_key'] ?? null;
         $remote_pq_pub = $feed['pq_public'] ?? null;
 
-        // Update mutual status and remote keys
         if ($remote_pub_key) {
             $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, pq_public = :pq, is_mutual = :mut WHERE onion_url = :url");
             $stmt_key->execute([':pub' => $remote_pub_key, ':pq' => $remote_pq_pub, ':mut' => $is_mutual, ':url' => $onion_url]);
@@ -160,7 +162,11 @@ try {
                 $stmt_del_media->execute([':rid' => $remote_id]);
                 $del_media = $stmt_del_media->fetchColumn();
                 
-                if ($del_media) @unlink(__DIR__ . '/media/' . basename($del_media));
+                // PHYSICAL DATA VAPORIZATION (Shredding external media)
+                if ($del_media) {
+                    $target_del_media = __DIR__ . '/media/' . basename($del_media);
+                    if (file_exists($target_del_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_del_media));
+                }
                 
                 $db->exec("DELETE FROM timeline WHERE remote_id = '$remote_id'");
                 $db->exec("DELETE FROM inbox WHERE remote_id = '$remote_id'");
@@ -176,7 +182,6 @@ try {
                 $is_decrypted_successfully = false;
                 $is_burner_received = false;
 
-                // STRICT V6/V8 HYBRID IDENTIFICATION (Legacy E2EE Dropped)
                 if (strpos($raw_content, 'HYBRID:') === 0 || strpos($raw_content, 'HYBRID-BURNER:') === 0) {
                     $is_burner_received = (strpos($raw_content, 'HYBRID-BURNER:') === 0);
                     $offset = $is_burner_received ? 14 : 7;
@@ -190,7 +195,6 @@ try {
                         $kem_layer2 = base64_decode($parts[1]);
                         $ciphertext = base64_decode($parts[2]);
 
-                        // RAM-Only KEM Authentication Check
                         $kem_layer1 = false;
                         if ($my_pq_keypair) $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
                         if ($kem_layer1 === false) $kem_layer1 = $kem_layer2; 
@@ -202,11 +206,8 @@ try {
                     }
 
                     if ($decrypted !== false) {
-                        // DOCTRINE ENFORCEMENT: Zero-Knowledge Data at Rest.
-                        // We strictly retain $raw_content as pure ciphertext for SQL storage.
                         $is_decrypted_successfully = true; 
                         
-                        // 📡 AIRGAPPED TELEGRAM BRIDGE DM TRIGGER (Routed strictly via Tor SOCKS5 Proxy)
                         if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
                             $drop_type = $is_burner_received ? "🔥 HYBRID BURNER" : "🔓 HYBRID DROP";
                             $msg_tg = "INBOX SECURE ALERT: 1 valid $drop_type received and authenticated from @" . $author_name;
@@ -218,7 +219,6 @@ try {
                             curl_setopt($chTg, CURLOPT_POSTFIELDS, ['chat_id' => $config['tg_chat'], 'text' => $msg_tg]);
                             curl_setopt($chTg, CURLOPT_TIMEOUT, 15);
                             
-                            // 🧤 SARUNG TANGAN GAIB
                             curl_setopt($chTg, CURLOPT_PROXY, "127.0.0.1:9050");
                             curl_setopt($chTg, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
                             
@@ -245,7 +245,7 @@ try {
                     ':rid'     => $remote_id,
                     ':name'    => $author_name,
                     ':host'    => $author_domain,
-                    ':content' => $raw_content, // Strictly pure ciphertext
+                    ':content' => $raw_content,
                     ':media'   => $safe_media,
                     ':reply'   => $post['reply_to'] ?? null,
                     ':stat'    => $final_status,

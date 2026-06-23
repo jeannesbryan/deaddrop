@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v7.0 - Asymmetric Black Site)
+// 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v9.0 - Asymmetric Obfuscation)
 // ==========================================
 require_once 'db.php';
 
@@ -16,19 +16,41 @@ if (!preg_match('#/deaddrop$#i', $clean_target)) $clean_target .= '/deaddrop';
 $my_url = rtrim($config['node_url'], '/');
 $is_local_profile = ($target_host === $my_url || $clean_target === $my_url || $target_host === 'localhost' || $target_host === '127.0.0.1');
 
+// 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY
+function encrypt_alias($plaintext, $key_string) {
+    $key = hash('sha256', $key_string, true);
+    $nonce = random_bytes(SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = sodium_crypto_secretbox($plaintext, $nonce, $key);
+    return 'ENC:' . base64_encode($nonce . $ciphertext);
+}
+
+function decrypt_alias($payload, $key_string) {
+    if (strpos($payload, 'ENC:') !== 0) return $payload; 
+    $data = base64_decode(substr($payload, 4));
+    if (strlen($data) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) return "[ENCRYPTED_BLOB]";
+    $nonce = substr($data, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = substr($data, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = hash('sha256', $key_string, true);
+    $dec = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
+    return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
+}
+
 // 🔐 BLACK SITE MASTER AUTHENTICATION
 $unlocked = false;
 $unlock_error = '';
+$master_key = '';
 
 if (isset($_POST['unlock_pass'])) {
     if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
         $unlocked = true;
+        $master_key = $_POST['unlock_pass'];
     } else {
         $unlock_error = "[!] AUTHENTICATION FAILED: INVALID MASTER KEY.";
     }
 }
 if (isset($_POST['admin_pass']) && password_verify($_POST['admin_pass'], $config['admin_hash'])) {
     $unlocked = true; // Valid action execution naturally unlocks the current view
+    $master_key = $_POST['admin_pass'];
 }
 
 // ==========================================
@@ -57,8 +79,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $status_class = "danger";
         } else {
             if ($action === 'follow') {
+                $enc_alias = encrypt_alias($host_domain, $master_key); // Auto-encrypt default alias
                 $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias) VALUES (:url, :alias)");
-                $stmt->execute([':url' => $clean_target_url, ':alias' => $host_domain]);
+                $stmt->execute([':url' => $clean_target_url, ':alias' => $enc_alias]);
                 $status_msg = "[+] SYNCHRONIZATION ACTIVE: Node appended to your radar.";
                 $status_class = "success";
             } elseif ($action === 'unfollow') {
@@ -150,7 +173,13 @@ if ($is_local_profile) {
             
             if ($saved_alias) {
                 $is_following = true;
-                $profile_name = '@' . $saved_alias;
+                $decrypted_name = decrypt_alias($saved_alias, $master_key);
+                $profile_name = '@' . $decrypted_name;
+                
+                // Override foreign author names with your local decrypted petname
+                foreach ($feeds as &$post) {
+                    $post['author_name'] = $profile_name;
+                }
             }
         } catch (PDOException $e) {
             $feeds = [];
@@ -196,7 +225,6 @@ if ($is_local_profile) {
     <?php endif; ?>
 
     <?php if (!$allow_view): ?>
-        <!-- 🕳️ RESTRICTED ZONE FOR STRANGERS PEEKING FOREIGN PROFILES -->
         <div style="margin-top: 12vh; text-align: center; border: 1px dashed #ff0055; padding: 40px 20px; background: rgba(255,0,85,0.02);">
             <h1 class="m-0 font-bold t-glow mb-2" style="font-size: 2rem; color: #ff0055;">[ 🔒 CLASSIFIED TARGET ]</h1>
             <div class="fs-small text-muted mb-4" style="text-transform: uppercase;">Inspection of foreign entities requires Master Key uplink.</div>
@@ -212,7 +240,6 @@ if ($is_local_profile) {
         </div>
     <?php else: ?>
 
-        <!-- ⚔️ OPERATIONAL CONTROLS (ONLY DISPLAYED TO YOU ON FOREIGN HOSTS) -->
         <?php if (!$is_local_profile && $unlocked): ?>
             <div class="t-card mb-4 p-3" style="border-style: dashed; border-color: var(--t-green-dim);">
                 <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 m-0 flex-wrap">
@@ -243,7 +270,6 @@ if ($is_local_profile) {
             </div>
         <?php endif; ?>
 
-        <!-- 📜 TIMELINE FEEDS (Public Manifesto or Decrypted Foreign Cache) -->
         <main>
             <div class="font-bold mb-3" style="text-transform: uppercase; color: var(--t-green);">
                 <?= $is_local_profile ? '[ Public Broadcast Manifesto ]' : '[ Cached Foreign Intelligence ]' ?>

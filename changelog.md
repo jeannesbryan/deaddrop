@@ -203,3 +203,18 @@ The node no longer exposes its host IP to clearnet API servers when dispatching 
 * **SOCKS5 Proxied API:** The optional Telegram Bridge now forcefully routes all `curl` requests through the local Tor daemon (`127.0.0.1:9050`), guaranteeing that your host machine remains 100% cloaked from Telegram's server logs.
 
 ---
+
+## [v9.0] - ANTI-FORENSICS & SOCIAL GRAPH OBFUSCATION
+DeadDrop v9.0 introduces military-grade anti-forensic countermeasures to physically destroy deleted data and cryptographically obfuscate your social graph from physical device seizures.
+
+### 🪚 PHASE 33: Physical Data Vaporization
+Deleted messages and media are no longer simply unlinked from the filesystem.
+* **Secure SQLite Deletion:** Injected `PRAGMA secure_delete = FAST;` into the core database. When a signal is destroyed, SQLite instantly overwrites its physical disk sectors with zeros.
+* **Media Shredding:** Replaced standard PHP `unlink()` with native Linux `shred -u -z -n 3`, forcing the server to overwrite deleted media files with 3 layers of random junk data and a final layer of zeros before physical deletion.
+
+### 🌫️ PHASE 34: Symmetric Social Graph Obfuscation
+The radar database no longer stores plaintext relational data.
+* **Encrypted Petnames:** Peer aliases in the `following` table are now strictly encrypted at rest using a symmetric Libsodium cipher derived from your Master Key. If the SQLite database is seized, investigators will only see random ciphertext blobs, successfully obscuring your social graph.
+* **On-the-Fly Hologram:** The UI dynamically decrypts and maps these aliases in volatile RAM only when the Master Key is authenticated.
+
+---
