@@ -1,5 +1,5 @@
 # 📜 DEADDROP // THE CHRONICLE OF DEVELOPMENT
-*The evolutionary progression of the Sovereign Nano-Pub Node (v1.0 to v6.0).*
+*The evolutionary progression of the Sovereign Nano-Pub Node.*
 
 ---
 

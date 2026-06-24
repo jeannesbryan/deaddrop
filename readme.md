@@ -34,6 +34,9 @@ Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server commun
 13. **Cron Jitter (Anti-Timing Analysis):** Background daemons autonomously inject randomized sleep delays (1-10 minutes) before execution to defeat data center traffic analysis and chronometric tracking.
 14. **Physical Data Vaporization:** Deletions are absolute. SQLite uses `PRAGMA secure_delete = FAST;` to overwrite purged messages with zeros, while media files are brutally destroyed using native Linux `shred` (3-pass overwrite) to defeat forensic disk recovery.
 15. **Social Graph Obfuscation:** Your address book is classified. Peer aliases (Petnames) are symmetrically encrypted at rest using Libsodium. Forensic analysis of the database reveals zero human-readable relational data.
+16. **Tor PoW Anti-DDoS & Nginx Cloaking:** Native Tor v3 Proof-of-Work puzzles aggressively burn botnet CPU, while Nginx is cloaked and stripped of identifiable signatures to prevent Layer-7 exhaustion.
+17. **Stealth Binding & UFW Armor:** The web server strictly binds to localhost (`127.0.0.1`), entirely disconnected from the Clearnet, sealed behind a strict UFW deny-all firewall.
+18. **ZRAM & Hardware Diet:** Built-in instructions to utilize LZ4 ZRAM compression, making it possible to run safely on a 256MB/1GB Set-Top Box without Out-Of-Memory (OOM) crashes.
 
 ---
 
@@ -47,7 +50,7 @@ First, update your system and install the foundational packages. We explicitly t
 
 ```bash
 apt update && apt upgrade -y
-apt install -y software-properties-common curl git nano nginx sqlite3 tor libimage-exiftool-perl
+apt install -y software-properties-common curl git nano nginx sqlite3 tor libimage-exiftool-perl zram-tools ufw
 ```
 
 Now, inject the PHP repository and install the strict PHP 8.2 ecosystem:
@@ -58,6 +61,24 @@ apt update
 
 # Install PHP 8.2 and its required sovereign extensions
 apt install -y php8.2-fpm php8.2-sqlite3 php8.2-curl php8.2-xml php8.2-mbstring
+```
+
+**Firewall Lockdown (Crucial):** Seal all public ports except SSH. Your node communicates strictly via Tor localhost.
+```bash
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw enable
+```
+
+**ZRAM Memory Compression (Anti-OOM):**
+```bash
+nano /etc/default/zramswap
+# Add these lines to compress 50% of your RAM dynamically:
+ALGO=lz4
+PERCENT=50
+# Save and execute:
+systemctl restart zramswap
 ```
 
 *Note: Libsodium (E2EE cryptography) is required by DeadDrop but is natively compiled into the PHP 8.2 core, requiring no separate package.*
@@ -74,7 +95,7 @@ To guarantee that Nginx and Tor automatically resurrect whenever your node reboo
 systemctl enable --now nginx tor php8.2-fpm
 ```
 
-#### PHASE 2: Extreme RAM Tuning (Crucial for Low-End Hardware)
+#### PHASE 2: Extreme Hardware Tuning & Engine Hardening
 To prevent Out-Of-Memory (OOM) crashes on devices with limited RAM (like a 256MB STB), we must enforce a strict background diet.
 
 **1. Limit Nginx Workers:**
@@ -87,7 +108,18 @@ worker_processes 1;
 ```
 Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
-**2. Enable PHP-FPM Hibernation:**
+**2. PHP Hardening (Disable Shell Execution):**
+```bash
+nano /etc/php/8.2/fpm/php.ini
+```
+Find and modify these exact lines to strip terminal access:
+```ini
+expose_php = Off
+disable_functions = exec,system,passthru,shell_exec,proc_open,popen,show_source
+```
+Save and exit.
+
+**3. Enable PHP-FPM Hibernation:**
 Open the pool configuration for PHP 8.2:
 ```bash
 nano /etc/php/8.2/fpm/pool.d/www.conf
@@ -99,21 +131,23 @@ pm.max_children = 5
 pm.process_idle_timeout = 10s
 pm.max_requests = 200
 ```
-Save and exit. Restart the stack to apply the diet:
+Save and exit. Restart the stack to apply the diet and armor:
 ```bash
 systemctl restart nginx
 systemctl restart php8.2-fpm
 ```
 
 #### PHASE 3: The Darknet Gateway (Tor Setup)
-We configure Tor to expose our web server locally.
+We configure Tor to expose our web server locally and ignite the Anti-DDoS defense.
 ```bash
 nano /etc/tor/torrc
 ```
-Scroll to the hidden services section and add these two lines:
+Scroll to the hidden services section and add these lines:
 ```text
 HiddenServiceDir /var/lib/tor/hidden_service/
 HiddenServicePort 80 127.0.0.1:80
+HiddenServicePoWDefensesEnabled 1
+HiddenServicePoWQueueRate 5
 ```
 Save and exit. Restart Tor to apply the configuration:
 ```bash
@@ -150,7 +184,7 @@ If you already possess a custom vanity `.onion` domain, **do not** let Tor run t
 ```
 5. **Ignite Tor and verify propagation:**
 ```bash
-   sudo systemctl start start tor
+   sudo systemctl start tor
    sudo systemctl status tor
 ```
 
@@ -192,7 +226,9 @@ nano /etc/nginx/sites-available/deaddrop
 Paste the following configuration *(replace the `.onion` address accordingly)*:
 ```nginx
 server {
-    listen 80;
+    listen 127.0.0.1:80;
+    server_tokens off;
+    client_max_body_size 2M;
     server_name your_generated_address.onion;
     root /var/www/html; # Root remains available for landing pages
     index index.php index.html;
