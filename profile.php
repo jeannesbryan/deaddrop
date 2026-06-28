@@ -3,18 +3,21 @@
 // 🏴‍☠️ DEADDROP: NODE PROFILE INSPECTOR (v9.0 - Asymmetric Obfuscation)
 // ==========================================
 require_once 'db.php';
+require_once 'auth.php';
+require_once 'net.php';
 
 $target_host = $_GET['host'] ?? $config['node_url'];
 $status_msg = '';
 $status_class = '';
 
-// Universal Path Healer
-$clean_target = $target_host;
-if (!preg_match('#^https?://#i', $clean_target)) $clean_target = 'http://' . $clean_target;
-if (!preg_match('#/deaddrop$#i', $clean_target)) $clean_target .= '/deaddrop';
+if (isset($_GET['lock'])) {
+    deaddrop_lock('index.php');
+}
 
-$my_url = rtrim($config['node_url'], '/');
-$is_local_profile = ($target_host === $my_url || $clean_target === $my_url || $target_host === 'localhost' || $target_host === '127.0.0.1');
+// Universal Path Healer + strict production peer policy
+$clean_target = deaddrop_normalize_peer_url($target_host) ?? $target_host;
+$my_url = deaddrop_normalize_peer_url($config['node_url']) ?? rtrim($config['node_url'], '/');
+$is_local_profile = deaddrop_same_peer_url($clean_target, $my_url);
 
 // 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY
 function encrypt_alias($plaintext, $key_string) {
@@ -36,21 +39,24 @@ function decrypt_alias($payload, $key_string) {
 }
 
 // 🔐 BLACK SITE MASTER AUTHENTICATION
-$unlocked = false;
+$unlocked = deaddrop_is_unlocked();
 $unlock_error = '';
-$master_key = '';
+$master_key = deaddrop_master_key();
 
 if (isset($_POST['unlock_pass'])) {
-    if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
+    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
         $unlocked = true;
-        $master_key = $_POST['unlock_pass'];
-    } else {
-        $unlock_error = "[!] AUTHENTICATION FAILED: INVALID MASTER KEY.";
+        $master_key = deaddrop_master_key();
     }
 }
 if (isset($_POST['admin_pass']) && password_verify($_POST['admin_pass'], $config['admin_hash'])) {
+    deaddrop_unlock($_POST['admin_pass'], $config['admin_hash'], $unlock_error);
     $unlocked = true; // Valid action execution naturally unlocks the current view
-    $master_key = $_POST['admin_pass'];
+    $master_key = deaddrop_master_key();
+}
+
+if ($unlocked) {
+    deaddrop_refresh_unlock();
 }
 
 // ==========================================
@@ -65,19 +71,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         $status_class = "danger";
     } else {
         $action = $_POST['action'];
-        $target_url = rtrim($_POST['target_url'], '/'); 
+        $target_url_raw = trim($_POST['target_url'] ?? '');
+        $policy_error = null;
+        $clean_target_url = deaddrop_normalize_and_validate_peer_url($target_url_raw, $config, $policy_error);
         
-        $clean_target_url = $target_url;
-        if (!preg_match('#^https?://#i', $clean_target_url)) $clean_target_url = 'http://' . $clean_target_url;
-        if (!preg_match('#/deaddrop$#i', $clean_target_url)) $clean_target_url .= '/deaddrop';
-        
-        $parsed_url = parse_url($clean_target_url);
-        $host_domain = $parsed_url['host'] ?? '';
-        
-        if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
-            $status_msg = "[!] ERROR: Strict Protocol! System only accepts Darknet (.onion) domains.";
+        if ($clean_target_url === null) {
+            $status_msg = "[!] ERROR: " . $policy_error;
             $status_class = "danger";
         } else {
+            $host_domain = deaddrop_url_host($clean_target_url);
             if ($action === 'follow') {
                 $enc_alias = encrypt_alias($host_domain, $master_key); // Auto-encrypt default alias
                 $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias) VALUES (:url, :alias)");
@@ -86,52 +88,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $status_class = "success";
             } elseif ($action === 'unfollow') {
                 $stmt = $db->prepare("DELETE FROM following WHERE onion_url = :url OR onion_url = :url_clean");
-                $stmt->execute([':url' => $target_url, ':url_clean' => $clean_target_url]);
+                $stmt->execute([':url' => $target_url_raw, ':url_clean' => $clean_target_url]);
                 $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node purged from radar.";
                 $status_class = "warning";
             } elseif ($action === 'ping_node') {
                 // PoW Hashcash Cannon
-                $my_pow_url = rtrim($config['node_url'], '/');
-                if (!preg_match('#^https?://#i', $my_pow_url)) $my_pow_url = 'http://' . $my_pow_url;
-                if (!preg_match('#/deaddrop$#i', $my_pow_url)) $my_pow_url .= '/deaddrop';
-                
-                $timestamp = time();
-                $nonce = 0;
-                $difficulty = '0000';
-                
-                while (true) {
-                    $hash = hash('sha256', $my_pow_url . $timestamp . $nonce);
-                    if (substr($hash, 0, strlen($difficulty)) === $difficulty) break;
-                    $nonce++;
-                }
-
-                $target_ping_url = $clean_target_url . '/ping.php';
-                $ch = curl_init($target_ping_url);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, [
-                    'source_url' => $my_pow_url,
-                    'timestamp'  => $timestamp,
-                    'nonce'      => $nonce
-                ]);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-                
-                if (preg_match('/\.onion$/i', $host_domain)) {
-                    curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
-                    curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
-                }
-                
-                $response = curl_exec($ch);
-                $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                
-                $clean_resp = strip_tags($response ? $response : 'No response.');
-                if ($http_code == 202) {
-                    $status_msg = "[+] SIGNAL TRANSMITTED (Nonce: $nonce): " . htmlspecialchars($clean_resp);
-                    $status_class = "success";
-                } else {
-                    $status_msg = "[!] PING FAILED (HTTP $http_code): " . htmlspecialchars($clean_resp);
+                $my_pow_url = deaddrop_normalize_peer_url($config['node_url']);
+                if ($my_pow_url === null) {
+                    $status_msg = "[!] CONFIG ERROR: node_url is malformed.";
                     $status_class = "danger";
+                } else {
+                    $timestamp = time();
+                    $nonce = 0;
+                    $difficulty = '0000';
+                    
+                    while (true) {
+                        $hash = hash('sha256', $my_pow_url . $timestamp . $nonce);
+                        if (substr($hash, 0, strlen($difficulty)) === $difficulty) break;
+                        $nonce++;
+                    }
+
+                    $target_ping_url = $clean_target_url . '/ping.php';
+                    $ch = curl_init($target_ping_url);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_POST, true);
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, [
+                        'source_url' => $my_pow_url,
+                        'timestamp'  => $timestamp,
+                        'nonce'      => $nonce
+                    ]);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+                    
+                    if (deaddrop_should_use_tor_proxy($clean_target_url)) {
+                        curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
+                        curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+                    }
+                    
+                    $response = curl_exec($ch);
+                    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
+                    
+                    $clean_resp = strip_tags($response ? $response : 'No response.');
+                    if ($http_code == 202) {
+                        $status_msg = "[+] SIGNAL TRANSMITTED (Nonce: $nonce): " . htmlspecialchars($clean_resp);
+                        $status_class = "success";
+                    } else {
+                        $status_msg = "[!] PING FAILED (HTTP $http_code): " . htmlspecialchars($clean_resp);
+                        $status_class = "danger";
+                    }
                 }
             }
         }
@@ -198,23 +202,16 @@ if ($is_local_profile) {
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
-    <style>
-        .post-card { border-left: 3px solid var(--t-green-dim); transition: 0.2s; margin-bottom: 15px; }
-        .post-card:hover { border-left-color: var(--t-green); background: rgba(0,255,65,0.03); }
-        .post-card.local-node { border-left-width: 4px; border-left-color: var(--t-green); }
-        .media-attachment { display: block; max-width: 100%; max-height: 400px; border: 1px dashed var(--t-green-dim); margin-top: 10px; filter: grayscale(80%) sepia(100%) hue-rotate(80deg) brightness(0.8) contrast(1.2); transition: 0.3s; }
-        .media-attachment:hover { filter: none; border-color: var(--t-green); }
-    </style>
 </head>
 <body class="t-crt">
 
 <div class="t-container t-box-md mt-4">
-    <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom" style="padding-bottom: 15px;">
+    <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom pb-3 t-stack-mobile">
         <div>
-            <h1 class="m-0 font-bold t-glow" style="font-size: 1.8rem; color: var(--t-green);">&gt; <?= htmlspecialchars($profile_name) ?>_</h1>
+            <h1 class="m-0 font-bold t-glow t-page-title">&gt; <?= htmlspecialchars($profile_name) ?>_</h1>
             <div class="mt-1 fs-small font-bold text-muted">
                 NODE: <?= htmlspecialchars($clean_target) ?>
-                <?= $is_local_profile ? '<span class="t-badge success ml-2" style="border:none; padding:1px 6px;">[ Sovereign Host ]</span>' : '' ?>
+                <?= $is_local_profile ? '<span class="t-badge success ghost ml-2">[ Sovereign Host ]</span>' : '' ?>
             </div>
         </div>
         <a href="index.php" class="t-btn">⇐ <?= $unlocked ? 'Command Center' : 'Home' ?></a>
@@ -225,27 +222,25 @@ if ($is_local_profile) {
     <?php endif; ?>
 
     <?php if (!$allow_view): ?>
-        <div style="margin-top: 12vh; text-align: center; border: 1px dashed #ff0055; padding: 40px 20px; background: rgba(255,0,85,0.02);">
-            <h1 class="m-0 font-bold t-glow mb-2" style="font-size: 2rem; color: #ff0055;">[ 🔒 CLASSIFIED TARGET ]</h1>
-            <div class="fs-small text-muted mb-4" style="text-transform: uppercase;">Inspection of foreign entities requires Master Key uplink.</div>
+        <div class="t-lock-panel private">
+            <h1 class="t-vault-title t-glow text-private">[ 🔒 CLASSIFIED TARGET ]</h1>
+            <div class="t-vault-subtitle">Inspection of foreign entities requires Master Key uplink.</div>
             
             <?php if (!empty($unlock_error)): ?>
-                <div class="t-alert danger mb-4" style="display: inline-block; text-align: left; border-color: #ff0055; color: #ff0055;"><?= htmlspecialchars($unlock_error) ?></div><br>
+                <div class="t-alert danger mb-4 d-inline-block text-left"><?= htmlspecialchars($unlock_error) ?></div><br>
             <?php endif; ?>
 
-            <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" style="display: inline-block; text-align: left; width: 100%; max-width: 350px;">
-                <input type="password" name="unlock_pass" class="t-input mb-3 w-100" placeholder="Insert Master Key..." required autofocus style="text-align: center; letter-spacing: 2px; border-color: #ff0055;">
-                <button type="submit" class="t-btn w-100 m-0 outline danger" style="color: #ff0055; border-color: #ff0055; font-weight: bold;">[ DECRYPT ENTITY CACHE ]</button>
+            <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="t-lock-form">
+                <input type="password" name="unlock_pass" class="t-input mb-3 w-100 t-input-center border-private" placeholder="Insert Master Key..." required autofocus>
+                <button type="submit" class="t-btn w-100 m-0 outline private font-bold">[ DECRYPT ENTITY CACHE ]</button>
             </form>
         </div>
     <?php else: ?>
 
         <?php if (!$is_local_profile && $unlocked): ?>
-            <div class="t-card mb-4 p-3" style="border-style: dashed; border-color: var(--t-green-dim);">
+            <div class="t-card dashed mb-4 p-3">
                 <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 m-0 flex-wrap">
                     <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
-                    <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass'] ?? $_POST['admin_pass'] ?? '') ?>">
-                    
                     <?php if ($is_following): ?>
                         <input type="hidden" name="action" value="unfollow">
                         <span class="text-success fs-small flex-fill font-bold t-glow">[✓] This node is synchronized to your radar.</span>
@@ -259,19 +254,18 @@ if ($is_local_profile) {
                     <?php endif; ?>
                 </form>
                 
-                <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap t-border-top border-soft">
                     <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
                     <input type="hidden" name="action" value="ping_node">
-                    <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass'] ?? $_POST['admin_pass'] ?? '') ?>">
                     <span class="text-muted fs-small flex-fill">Manually knock on their door (Solves PoW puzzle before sending).</span>
                     <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
-                    <button type="submit" class="t-btn outline m-0" onclick="this.innerHTML='MINING...';">[ KNOCK / PING ]</button>
+                    <button type="submit" class="t-btn outline m-0" >[ KNOCK / PING ]</button>
                 </form>
             </div>
         <?php endif; ?>
 
         <main>
-            <div class="font-bold mb-3" style="text-transform: uppercase; color: var(--t-green);">
+            <div class="t-section-label">
                 <?= $is_local_profile ? '[ Public Broadcast Manifesto ]' : '[ Cached Foreign Intelligence ]' ?>
             </div>
             
@@ -282,8 +276,8 @@ if ($is_local_profile) {
                 </div>
             <?php else: ?>
                 <?php foreach ($feeds as $post): ?>
-                    <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none;">
-                        <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
+                    <div class="t-post <?= $post['is_local'] ? 'local-node' : '' ?>">
+                        <div class="t-post-header fs-small">
                             <div>
                                 <span class="t-badge outline font-bold"><?= htmlspecialchars($post['author_name']) ?></span>
                             </div>
@@ -291,16 +285,16 @@ if ($is_local_profile) {
                         </div>
                         
                         <?php if (!empty($post['reply_to'])): ?>
-                            <div class="t-badge mb-2" style="background: transparent; border-style: dotted;">Replying to: <?= htmlspecialchars($post['reply_to']) ?></div>
+                            <div class="t-badge dotted mb-2">Replying to: <?= htmlspecialchars($post['reply_to']) ?></div>
                         <?php endif; ?>
 
-                        <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: var(--t-green); word-break: break-all; overflow-wrap: break-word;"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
+                        <div class="t-post-content mt-1"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
                         
                         <?php if (!empty($post['media_url'])): ?>
-                            <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="media-attachment">
+                            <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="t-media-attachment terminal-filter">
                         <?php endif; ?>
                         
-                        <div class="text-right mt-3 pt-2" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                        <div class="t-post-footer">
                             <span class="fs-small text-muted"><?= htmlspecialchars($post['created_at']) ?> UTC</span>
                         </div>
                     </div>

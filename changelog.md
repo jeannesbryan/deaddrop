@@ -218,3 +218,71 @@ The radar database no longer stores plaintext relational data.
 * **On-the-Fly Hologram:** The UI dynamically decrypts and maps these aliases in volatile RAM only when the Master Key is authenticated.
 
 ---
+
+## [v10.0] - THE HARDENING RESET
+DeadDrop v10.0 is a security-hardening release focused on turning the experimental Tor-native Nano-Pub node into a safer, more defensible codebase. This update does not chase new social features; it tightens execution boundaries, reduces data leakage, centralizes network policy, hardens worker memory behavior, and aligns the public documentation with the actual implementation.
+
+### 🧱 PHASE 35: CLI-Only Worker Lockdown
+The background courier is now explicitly restricted to terminal/cron execution.
+* **Worker Web Kill-Switch:** `worker.php` now refuses browser execution via `php_sapi_name() !== 'cli'`, returning HTTP 403 outside the command line.
+* **Nginx Perimeter Block:** Direct access to CLI-only and helper scripts such as `worker.php`, `offload.php`, `keygen.php`, `password-generator.php`, `db.php`, `auth.php`, `net.php`, and `outbox.php` is blocked at the web server layer.
+* **Sensitive Directory Shield:** Runtime storage directories such as `data/`, `backup/`, and `keys/` are explicitly denied from public web access.
+
+### 🧨 PHASE 36: Prepared-Statement Destruction Path
+Destructive SQL paths in the worker have been refactored to remove raw dynamic deletion queries.
+* **Safe Tombstone Deletion:** Remote tombstone processing now deletes mirrored timeline/inbox rows through prepared statements instead of interpolated SQL.
+* **Safe Ephemeral Sweeper:** Expired signal cleanup now uses parameterized queries for both selection and deletion.
+* **Shared Delete Helper:** Worker-side signal deletion is consolidated into a reusable `delete_signal_by_remote_id()` helper to prevent future raw-SQL regressions.
+
+### 🔐 PHASE 37: Session-Based Vault Unlock
+The previous hidden-input unlock flow has been retired to prevent the Master Key from being carried inside HTML forms.
+* **No More Hidden Master Key:** `unlock_pass` is no longer propagated through hidden form fields during paging or protected actions.
+* **Short-Lived Server Session:** Authenticated views now use a short server-side session window instead of repeatedly embedding the unlock secret in the page source.
+* **No-Store Security Headers:** Protected pages now send anti-cache headers such as `Cache-Control: no-store`, `Pragma: no-cache`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`.
+* **Explicit Lock Control:** Protected views now support a server-side lock action that destroys the unlock session cleanly.
+
+### 🧭 PHASE 38: Encrypted Petname Routing Fix
+Private-message routing through `@alias` has been repaired for encrypted radar aliases.
+* **Encrypted Alias Lookup:** `publish.php` no longer searches encrypted aliases as plaintext inside SQLite.
+* **Volatile Alias Resolution:** The publisher now decrypts radar aliases in memory using the authenticated Master Key and matches the requested `@alias` safely.
+* **Clear Key-Sync Errors:** If a peer exists but has not yet published/synced a usable public key, DeadDrop now returns a clearer error instead of failing ambiguously.
+
+### 🖼️ PHASE 39: Private Media Leak Prevention
+Private drops are now protected from accidental public media URL exposure.
+* **Private Attachment Lockdown:** Media uploads are disabled for private encrypted DMs until encrypted media support is implemented.
+* **Outbox Media Scrub:** Split-ledger private entries are forced to export with `media_url: null`, preventing plaintext media URLs from leaking through `outbox.json`.
+* **Inbox Remote Media Guard:** Decrypted private drops received from remote nodes no longer auto-store or auto-render remote media URLs.
+
+### 🧯 PHASE 40: Worker Anti-OOM Response Guard
+The syndication worker now enforces a strict remote response ceiling to reduce memory-exhaustion risk.
+* **2 MB Remote Outbox Limit:** cURL ingestion now uses a write callback that aborts transfers exceeding the configured byte limit.
+* **No Unlimited Buffering:** The worker no longer blindly stores arbitrary remote `outbox.json` bodies through unbounded `CURLOPT_RETURNTRANSFER` behavior.
+* **Per-Node Post Cap:** Each remote node is capped to a bounded number of posts per worker cycle to keep sync predictable on low-RAM hosts.
+
+### 🧅 PHASE 41: Strict Tor v3 Network Policy
+Peer validation has been centralized and tightened around production-safe Tor v3 addresses.
+* **Central `net.php` Policy:** Onion validation and path normalization are now handled through a shared network helper.
+* **Tor v3 Enforcement:** Production mode only accepts valid 56-character Tor v3 `.onion` hosts.
+* **Localhost Disabled by Default:** `localhost`, `127.0.0.1`, and `::1` are rejected unless `allow_local_peers` is explicitly enabled for lab/dev use.
+* **Reduced SSRF Surface:** Ping, radar, profile, publish, and worker flows now use the same stricter peer validation logic.
+
+### 🗃️ PHASE 42: Off-Webroot Storage Migration
+Sensitive runtime assets have been moved away from the public web tree.
+* **External SQLite Path:** The database now lives under `/var/lib/deaddrop/deaddrop.sqlite` instead of inside `/var/www/html/deaddrop/data/`.
+* **External Backup Vault:** Rotational archives now target `/var/backups/deaddrop` instead of a web-accessible project subfolder.
+* **External Secret Config:** Deployment secrets are moved into `/etc/deaddrop/config.php`, while `db.php` becomes a bootstrap loader.
+* **Cleaner Permission Model:** Runtime storage, backups, and config files are designed for restrictive ownership and permissions.
+
+### 🧬 PHASE 43: Atomic Outbox Rebuild Engine
+`outbox.json` generation has been centralized and made safer against partial writes.
+* **Shared `outbox.php` Helper:** `publish.php` and `delete.php` now call the same `rebuild_outbox()` pipeline.
+* **Atomic JSON Writes:** DeadDrop writes to a temporary file first, then renames it into place to avoid corrupt or half-written `outbox.json` files.
+* **JSON Error Visibility:** Encoding now uses stricter JSON error handling instead of silently producing broken output.
+* **Private Drop Sanitizer:** Split-ledger content and private media fields are stripped consistently from public feed exports.
+
+### 🧾 PHASE 44: Security Claims Recalibration
+The public documentation has been rewritten to match the actual security properties of the codebase.
+* **No More Overclaiming:** Absolute terms such as “military-grade,” “mathematically impervious,” “total immunity,” and “forensics-proof” have been replaced with more accurate language.
+* **Post-Quantum Placeholder Disclosure:** The so-called PQ layer is documented as an experimental placeholder until a real audited ML-KEM/Kyber implementation is integrated.
+* **Zero-Knowledge Wording Correction:** DeadDrop no longer claims formal zero-knowledge guarantees where the implementation does not provide them.
+* **Threat Model Added:** The README and security notes now explain what DeadDrop attempts to reduce, what remains out of scope, and why the project should still be treated as experimental and unaudited.

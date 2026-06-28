@@ -2,9 +2,34 @@
 // ==========================================
 // 🏴‍☠️ DEADDROP: THE GUARD & COURIER (v9.0 - Airgapped & Anti-Forensics)
 // ==========================================
+if (php_sapi_name() !== 'cli') {
+    http_response_code(403);
+    die("[!] Worker is CLI only.\n");
+}
+
 require_once 'db.php';
+require_once 'net.php';
 
 header('Content-Type: text/plain; charset=utf-8');
+
+// 🛡️ ANTI-OOM RESPONSE GUARD
+// Never keep a remote outbox.json larger than 2 MB in memory.
+define('DEADDROP_WORKER_MAX_RESPONSE_BYTES', 2 * 1024 * 1024);
+define('DEADDROP_WORKER_MAX_POSTS_PER_NODE', 100);
+
+function format_bytes(int $bytes): string {
+    if ($bytes >= 1048576) return round($bytes / 1048576, 2) . ' MB';
+    if ($bytes >= 1024) return round($bytes / 1024, 2) . ' KB';
+    return $bytes . ' B';
+}
+
+function delete_signal_by_remote_id(PDO $db, string $remote_id): void {
+    $stmtDelTimeline = $db->prepare("DELETE FROM timeline WHERE remote_id = :rid");
+    $stmtDelInbox = $db->prepare("DELETE FROM inbox WHERE remote_id = :rid");
+
+    $stmtDelTimeline->execute([':rid' => $remote_id]);
+    $stmtDelInbox->execute([':rid' => $remote_id]);
+}
 
 echo "============================================\n";
 echo "   DEADDROP WORKER INITIATED (STRICT V9 HYBRID)\n";
@@ -20,19 +45,19 @@ try {
     $now_utc = gmdate('Y-m-d\TH:i:s\Z');
 
     echo "[>] Running Ephemeral Sweeper...\n";
-    $stmt_exp = $db->query("
-        SELECT media_url, remote_id FROM timeline WHERE expires_at IS NOT NULL AND expires_at <= '$now_utc'
+    $stmt_exp = $db->prepare("
+        SELECT media_url, remote_id FROM timeline WHERE expires_at IS NOT NULL AND expires_at <= :now
         UNION ALL
-        SELECT media_url, remote_id FROM inbox WHERE expires_at IS NOT NULL AND expires_at <= '$now_utc'
+        SELECT media_url, remote_id FROM inbox WHERE expires_at IS NOT NULL AND expires_at <= :now
     ");
+    $stmt_exp->execute([':now' => $now_utc]);
     $expired_count = 0;
     foreach ($stmt_exp->fetchAll(PDO::FETCH_ASSOC) as $exp) {
         if (!empty($exp['media_url'])) {
             $target_media = __DIR__ . '/media/' . basename($exp['media_url']);
             if (file_exists($target_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_media));
         }
-        $db->exec("DELETE FROM timeline WHERE remote_id = '{$exp['remote_id']}'");
-        $db->exec("DELETE FROM inbox WHERE remote_id = '{$exp['remote_id']}'");
+        delete_signal_by_remote_id($db, (string)$exp['remote_id']);
         $expired_count++;
     }
     if ($expired_count > 0) echo "    [+] Purged and shredded $expired_count expired ephemeral signals.\n\n";
@@ -65,24 +90,44 @@ try {
     
     $multi_handle = curl_multi_init();
     $curl_handles = [];
+    $curl_buffers = [];
+    $curl_too_large = [];
 
-    foreach ($target_urls as $onion_url) {
-        $onion_url = rtrim($onion_url, '/');
+    foreach ($target_urls as $peer_url_raw) {
+        $policy_error = null;
+        $onion_url = deaddrop_normalize_and_validate_peer_url((string)$peer_url_raw, $config, $policy_error);
+        if ($onion_url === null) {
+            echo "    [!] Skipping rejected peer endpoint: " . strip_tags((string)$peer_url_raw) . " // " . $policy_error . "\n";
+            continue;
+        }
+
         $outbox_url = $onion_url . '/outbox.json';
-        $host_domain = parse_url($onion_url)['host'] ?? '';
+        $host_domain = deaddrop_url_host($onion_url);
+        $is_onion = deaddrop_should_use_tor_proxy($onion_url);
 
-        $is_onion = preg_match('/\.onion$/i', $host_domain);
-        $is_local = ($host_domain === 'localhost' || $host_domain === '127.0.0.1');
-
-        if (!$is_onion && !$is_local) continue;
+        $curl_buffers[$onion_url] = '';
+        $curl_too_large[$onion_url] = false;
 
         $ch = curl_init($outbox_url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
         curl_setopt($ch, CURLOPT_TCP_KEEPALIVE, 1);
         curl_setopt($ch, CURLOPT_FORBID_REUSE, 0); 
         curl_setopt($ch, CURLOPT_FRESH_CONNECT, 0);
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, string $chunk) use (&$curl_buffers, &$curl_too_large, $onion_url): int {
+            $current_size = strlen($curl_buffers[$onion_url]);
+            $chunk_size = strlen($chunk);
+
+            if (($current_size + $chunk_size) > DEADDROP_WORKER_MAX_RESPONSE_BYTES) {
+                $curl_too_large[$onion_url] = true;
+                return 0; // Abort this transfer immediately.
+            }
+
+            $curl_buffers[$onion_url] .= $chunk;
+            return $chunk_size;
+        });
 
         if ($is_onion) {
             curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
@@ -110,23 +155,40 @@ try {
     echo "[+] Data received. Processing payloads...\n\n";
 
     foreach ($curl_handles as $onion_url => $ch) {
-        $json_response = curl_multi_getcontent($ch);
+        $json_response = $curl_buffers[$onion_url] ?? '';
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curl_error = curl_error($ch);
+        $was_too_large = $curl_too_large[$onion_url] ?? false;
         
         curl_multi_remove_handle($multi_handle, $ch);
         curl_close($ch);
+        unset($curl_buffers[$onion_url], $curl_too_large[$onion_url]);
 
-        $host_domain = parse_url($onion_url)['host'] ?? '';
+        $host_domain = deaddrop_url_host($onion_url);
+
+        if ($was_too_large || strlen($json_response) > DEADDROP_WORKER_MAX_RESPONSE_BYTES) {
+            echo "    [!] Node skipped: " . $host_domain . " sent an outbox larger than " . format_bytes(DEADDROP_WORKER_MAX_RESPONSE_BYTES) . ".\n";
+            continue;
+        }
         
-        if ($http_code !== 200 || !$json_response) {
-            echo "    [!] Node Offline or Timeout: " . $host_domain . "\n";
+        if ($http_code !== 200 || $json_response === '') {
+            $reason = $curl_error ? " (cURL: $curl_error)" : '';
+            echo "    [!] Node Offline or Timeout: " . $host_domain . $reason . "\n";
             continue;
         }
 
         $feed = json_decode($json_response, true);
-        if (!$feed || !isset($feed['posts'])) continue;
+        if (!$feed || !isset($feed['posts']) || !is_array($feed['posts'])) {
+            echo "    [!] Invalid outbox schema from: " . $host_domain . "\n";
+            continue;
+        }
 
-        echo "    [>] Syncing Node: " . $host_domain . "\n";
+        if (count($feed['posts']) > DEADDROP_WORKER_MAX_POSTS_PER_NODE) {
+            echo "    [!] Node capped: " . $host_domain . " advertised " . count($feed['posts']) . " posts; processing latest " . DEADDROP_WORKER_MAX_POSTS_PER_NODE . " only.\n";
+            $feed['posts'] = array_slice($feed['posts'], -DEADDROP_WORKER_MAX_POSTS_PER_NODE);
+        }
+
+        echo "    [>] Syncing Node: " . $host_domain . " (" . format_bytes(strlen($json_response)) . ")\n";
 
         $my_clean_url = rtrim($config['node_url'], '/');
         $is_mutual = (strpos($json_response, $my_clean_url) !== false) ? 1 : 0;
@@ -168,8 +230,7 @@ try {
                     if (file_exists($target_del_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_del_media));
                 }
                 
-                $db->exec("DELETE FROM timeline WHERE remote_id = '$remote_id'");
-                $db->exec("DELETE FROM inbox WHERE remote_id = '$remote_id'");
+                delete_signal_by_remote_id($db, (string)$remote_id);
                 continue;
             }
 
@@ -232,7 +293,13 @@ try {
                 }
 
                 $safe_media = $post['media_url'] ?? null;
-                if ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) $safe_media = null;
+                if ($is_decrypted_successfully) {
+                    // Private drops must not auto-load remote/public media URLs.
+                    // Encrypted media support should carry a file key inside the encrypted payload instead.
+                    $safe_media = null;
+                } elseif ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) {
+                    $safe_media = null;
+                }
 
                 $target_table = $is_decrypted_successfully ? 'inbox' : 'timeline';
                 $expires_at = $post['expires_at'] ?? null;

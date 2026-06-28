@@ -3,9 +3,14 @@
 // 🏴‍☠️ DEADDROP: THE HOLOGRAM (v9.0 - Social Graph Obfuscation)
 // ==========================================
 require_once 'db.php';
+require_once 'auth.php';
 
 $status_msg = '';
 $alert_type = 'success';
+
+if (isset($_GET['lock'])) {
+    deaddrop_lock('index.php');
+}
 
 // 🔮 SYMMETRIC ALIAS CRYPTOGRAPHY
 function decrypt_alias($payload, $key_string) {
@@ -19,19 +24,21 @@ function decrypt_alias($payload, $key_string) {
     return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
 }
 
-// 🔐 BLACK SITE AUTHENTICATION (THE VOID)
-$unlocked = false;
+// 🔐 BLACK SITE AUTHENTICATION (SESSION-BASED, NO HIDDEN MASTER KEY)
+$unlocked = deaddrop_is_unlocked();
 $unlock_error = '';
-$master_key = '';
+$master_key = deaddrop_master_key();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
-    if (password_verify($_POST['unlock_pass'], $config['admin_hash'])) {
+    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
         $unlocked = true;
-        $master_key = $_POST['unlock_pass']; // Capture key for volatile decryption
+        $master_key = deaddrop_master_key();
         $status_msg = "[+] BLACK SITE UNLOCKED: GLOBAL TIMELINE EXTRAPOLATED";
-    } else {
-        $unlock_error = "[!] AUTHENTICATION FAILED: INVALID MASTER KEY.";
     }
+}
+
+if ($unlocked) {
+    deaddrop_refresh_unlock();
 }
 
 // ==========================================
@@ -107,50 +114,41 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png" />
-    <style>
-        .post-card { border-left: 3px solid var(--t-green-dim); transition: 0.2s; margin-bottom: 15px; }
-        .post-card:hover { border-left-color: var(--t-green); background: rgba(0,255,65,0.03); }
-        .post-card.local-node { border-left-width: 4px; border-left-color: var(--t-green); }  
-        .media-attachment { display: block; max-width: 100%; max-height: 400px; border: 1px dashed var(--t-green-dim); margin-top: 10px; filter: grayscale(80%) sepia(100%) hue-rotate(80deg) brightness(0.8) contrast(1.2); transition: 0.3s; }
-        .media-attachment:hover { filter: none; border-color: var(--t-green); }
-        .thread-quote { background: rgba(0, 255, 102, 0.05); border-left: 2px dashed var(--t-green-dim); padding: 8px 12px; margin-bottom: 12px; font-size: 0.85rem; color: var(--t-green-dim); }
-        .thread-quote .quote-author { font-weight: bold; color: var(--t-green); margin-bottom: 4px; display: block; }
-    </style>
 </head>
 <body class="t-crt">
 
 <div class="t-container t-box-md mt-4">
 
     <?php if (!$unlocked): ?>
-        <div style="margin-top: 15vh; text-align: center; border: 1px dashed var(--t-green-dim); padding: 40px 20px; background: rgba(0,255,65,0.02);">
-            <h1 class="m-0 font-bold t-glow mb-2" style="font-size: 2rem; color: var(--t-green);">[ 🔒 RESTRICTED ZONE ]</h1>
-            <div class="fs-small text-muted mb-4" style="text-transform: uppercase;">Sovereign Timeline is Classified. Authentication Required.</div>
+        <div class="t-lock-panel">
+            <h1 class="t-vault-title t-glow text-success">[ 🔒 RESTRICTED ZONE ]</h1>
+            <div class="t-vault-subtitle">Sovereign Timeline is Classified. Authentication Required.</div>
             
             <?php if (!empty($unlock_error)): ?>
-                <div class="t-alert danger mb-4" style="display: inline-block; text-align: left; border-color: #ff0055; color: #ff0055;"><?= htmlspecialchars($unlock_error) ?></div><br>
+                <div class="t-alert danger mb-4 d-inline-block text-left"><?= htmlspecialchars($unlock_error) ?></div><br>
             <?php endif; ?>
 
-            <form action="index.php?page=<?= $page ?>" method="POST" style="display: inline-block; text-align: left; width: 100%; max-width: 350px;">
-                <input type="password" name="unlock_pass" class="t-input mb-3 w-100" placeholder="Insert Master Key..." required autofocus style="text-align: center; letter-spacing: 2px;">
-                <button type="submit" class="t-btn w-100 m-0 outline" style="color: var(--t-green); border-color: var(--t-green); font-weight: bold;">[ INITIALIZE UPLINK ]</button>
+            <form action="index.php?page=<?= $page ?>" method="POST" class="t-lock-form">
+                <input type="password" name="unlock_pass" class="t-input mb-3 w-100 t-input-center" placeholder="Insert Master Key..." required autofocus>
+                <button type="submit" class="t-btn w-100 m-0 outline font-bold">[ INITIALIZE UPLINK ]</button>
             </form>
         </div>
     <?php else: ?>
 
-        <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom" style="padding-bottom: 15px;">
+        <div class="d-flex justify-content-between align-items-center mb-4 t-border-bottom pb-3 t-stack-mobile">
             <div>
-                <h1 class="m-0 font-bold t-glow" style="font-size: 1.8rem; color: var(--t-green);">&gt; <?= htmlspecialchars($config['node_name']) ?>_</h1>
+                <h1 class="m-0 font-bold t-glow t-page-title">&gt; <?= htmlspecialchars($config['node_name']) ?>_</h1>
                 <div class="mt-1 fs-small font-bold text-muted">
                     NODE: <?= htmlspecialchars($config['node_url']) ?>
                 </div>
             </div>
-            <a href="index.php" class="t-btn danger outline" style="color: #ff0055; border-color: #ff0055;">[ LOCK ]</a>
+            <a href="index.php?lock=1" class="t-btn danger outline">[ LOCK ]</a>
         </div>
 
-        <div class="d-flex gap-2 mb-4">
-            <a href="index.php" class="t-btn" style="background: var(--t-green); color: black;">[ TIMELINE ]</a>
-            <a href="dm.php" class="t-btn outline" style="color: #ff0055; border-color: #ff0055;">[ INBOX ]</a>
-            <a href="radar.php" class="t-btn outline" style="color: var(--t-cyan, #00ffff); border-color: var(--t-cyan, #00ffff);">[ RADAR ]</a>
+        <div class="t-toolbar">
+            <a href="index.php" class="t-btn active">[ TIMELINE ]</a>
+            <a href="dm.php" class="t-btn private outline">[ INBOX ]</a>
+            <a href="radar.php" class="t-btn info outline">[ RADAR ]</a>
         </div>
 
         <?php if (!empty($status_msg)): ?>
@@ -158,7 +156,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
         <?php endif; ?>
 
         <div class="t-card mb-4">
-            <div class="font-bold mb-3" style="color: var(--t-green);">[ Broadcast Station ]</div>
+            <div class="t-card-title">[ Broadcast Station ]</div>
             <form action="publish.php" method="POST" enctype="multipart/form-data">
                 <textarea name="content" class="t-textarea mb-2" placeholder="Type your public speculations or thought logs here..." required></textarea>
                 
@@ -166,14 +164,14 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                     <input type="text" name="target" class="t-input w-auto flex-fill m-0" placeholder="Target @alias is required for Hybrid E2EE">
                     <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0" placeholder="Reply to Post ID (Optional)">
                     
-                    <select name="ttl" class="t-input w-auto m-0" style="font-size: 0.8rem;">
+                    <select name="ttl" class="t-input w-auto m-0 t-input-sm">
                         <option value="0">TTL: Forever</option>
                         <option value="1">TTL: 1 Hour</option>
                         <option value="24">TTL: 24 Hours</option>
                         <option value="168">TTL: 7 Days</option>
                     </select>
 
-                    <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0" style="font-size: 0.8rem;">
+                    <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0 t-input-sm">
                 </div>
 
                 <div class="d-flex gap-2">
@@ -184,7 +182,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
         </div>
 
         <main>
-            <div class="font-bold mb-3 t-glow text-success" style="text-transform: uppercase;">[ Global Signals Data Log ]</div>
+            <div class="t-section-label t-glow">[ Global Signals Data Log ]</div>
             
             <?php if (empty($feeds)): ?>
                 <div class="t-empty-state">
@@ -193,10 +191,10 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                 </div>
             <?php else: ?>
                 <?php foreach ($feeds as $post): ?>
-                    <div class="t-card p-3 post-card <?= $post['is_local'] ? 'local-node' : '' ?>" style="border-top: none; <?= ($post['status'] === 'deleted') ? 'opacity: 0.6;' : '' ?>">
-                        <div class="d-flex justify-content-between align-items-center t-border-bottom pb-2 mb-2 fs-small">
+                    <div class="t-post <?= $post['is_local'] ? 'local-node' : '' ?> <?= ($post['status'] === 'deleted') ? 'deleted' : '' ?>">
+                        <div class="t-post-header fs-small">
                             <div>
-                                <a href="profile.php?host=<?= urlencode($post['author_host']) ?>" class="t-badge outline" style="text-decoration: none; font-weight: bold;">
+                                <a href="profile.php?host=<?= urlencode($post['author_host']) ?>" class="t-badge outline t-post-author t-link-plain">
                                     <?= htmlspecialchars($post['author_name']) ?>
                                 </a>
                             </div>
@@ -204,14 +202,14 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                             <div class="text-muted d-flex align-items-center gap-2">
                                 <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
                                 <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
-                                    <form action="delete.php" method="POST" class="m-0 p-0" style="display:inline;" onsubmit="return confirm('Initiate Global Tombstone Protocol? This will destroy the signal across all synced nodes.');">
+                                    <form action="delete.php" method="POST" class="m-0 p-0 t-inline-form" onsubmit="return confirm('Initiate Global Tombstone Protocol? This will destroy the signal across all synced nodes.');">
                                         <input type="hidden" name="remote_id" value="<?= htmlspecialchars($post['remote_id']) ?>">
-                                        <input type="password" name="admin_pass" placeholder="Key" class="t-input m-0" style="width:60px; padding:0 4px; font-size:10px; height:20px; display:inline-block;" required>
-                                        <button type="submit" class="t-badge outline danger m-0" style="border:none; cursor:pointer; padding:2px;">[ DEL ]</button>
+                                        <input type="password" name="admin_pass" placeholder="Key" class="t-input m-0 t-input-xs" required>
+                                        <button type="submit" class="t-badge outline danger m-0 t-delete-mini">[ DEL ]</button>
                                     </form>
                                 <?php endif; ?>
                                 <?php if (!empty($post['expires_at'])): ?>
-                                    <span class="t-badge outline warning" style="border:none;">[ ⏳ Ephemeral ]</span>
+                                    <span class="t-badge outline warning ghost">[ ⏳ Ephemeral ]</span>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -221,24 +219,24 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                             $parent = get_parent_post($db, $post['reply_to'], $alias_map);
                             if ($parent):
                         ?>
-                            <div class="thread-quote">
-                                <span class="quote-author">> Replying to <?= htmlspecialchars($parent['author_name']) ?> :</span>
+                            <div class="t-quote">
+                                <span class="t-quote-author">> Replying to <?= htmlspecialchars($parent['author_name']) ?> :</span>
                                 <?= nl2br(htmlspecialchars(mb_strimwidth($parent['content'], 0, 150, "..."))) ?>
                             </div>
                         <?php else: ?>
-                            <div class="t-badge mb-2" style="background: transparent; border-style: dotted;">Replying to: <?= htmlspecialchars($post['reply_to']) ?> (Signal Lost)</div>
+                            <div class="t-badge dotted mb-2">Replying to: <?= htmlspecialchars($post['reply_to']) ?> (Signal Lost)</div>
                         <?php 
                             endif;
                         endif; 
                         ?>
 
-                        <div class="post-content mt-1" style="white-space: pre-wrap; font-size: 14px; color: var(--t-green); font-family: monospace; word-break: break-all; overflow-wrap: break-word;"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
+                        <div class="t-post-content mt-1"><?= nl2br(htmlspecialchars($post['content'])) ?></div>
                         
                         <?php if (!empty($post['media_url'])): ?>
-                            <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="media-attachment">
+                            <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="t-media-attachment terminal-filter">
                         <?php endif; ?>
                         
-                        <div class="text-right mt-3 pt-2" style="border-top: 1px dashed rgba(0,255,65,0.2);">
+                        <div class="t-post-footer">
                             <span class="fs-small text-muted"><?= htmlspecialchars($post['created_at']) ?> UTC</span>
                         </div>
                     </div>
@@ -246,25 +244,19 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
             <?php endif; ?>
 
             <?php if ($total_pages > 1): ?>
-            <div class="d-flex justify-content-center align-items-center mt-4 pt-3 t-border-top gap-3">
+            <div class="t-pagination">
                 <?php if ($page > 1): ?>
-                    <form action="index.php?page=<?= $page - 1 ?>" method="POST" class="m-0 p-0">
-                        <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass']) ?>">
-                        <button type="submit" class="t-btn outline m-0">[ ◄ Page <?= $page - 1 ?> ]</button>
-                    </form>
+                    <a href="index.php?page=<?= $page - 1 ?>" class="t-page-link">[ ◄ Page <?= $page - 1 ?> ]</a>
                 <?php else: ?>
-                    <span class="t-btn outline text-muted" style="border-color: rgba(0,255,65,0.2); cursor: not-allowed;">[ ◄ Page ]</span>
+                    <span class="t-page-link t-page-disabled">[ ◄ Page ]</span>
                 <?php endif; ?>
 
-                <span class="font-bold t-glow" style="color: var(--t-green);">-- ( Current: <?= $page ?> ) --</span>
+                <span class="t-page-current">-- ( Current: <?= $page ?> ) --</span>
 
                 <?php if ($page < $total_pages): ?>
-                    <form action="index.php?page=<?= $page + 1 ?>" method="POST" class="m-0 p-0">
-                        <input type="hidden" name="unlock_pass" value="<?= htmlspecialchars($_POST['unlock_pass']) ?>">
-                        <button type="submit" class="t-btn outline m-0">[ Page <?= $page + 1 ?> ► ]</button>
-                    </form>
+                    <a href="index.php?page=<?= $page + 1 ?>" class="t-page-link">[ Page <?= $page + 1 ?> ► ]</a>
                 <?php else: ?>
-                    <span class="t-btn outline text-muted" style="border-color: rgba(0,255,65,0.2); cursor: not-allowed;">[ Page ► ]</span>
+                    <span class="t-page-link t-page-disabled">[ Page ► ]</span>
                 <?php endif; ?>
             </div>
             <?php endif; ?>

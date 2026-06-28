@@ -3,17 +3,18 @@
 // 🏴‍☠️ DEADDROP: THE DOOR (v8.0 - Airgapped Gatekeeper)
 // ==========================================
 require_once 'db.php';
+require_once 'net.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     die("[!] Access denied. Passive mode.");
 }
 
-$source_url = trim(strip_tags($_POST['source_url'] ?? ''));
+$source_url_raw = trim(strip_tags($_POST['source_url'] ?? ''));
 $timestamp  = (int)($_POST['timestamp'] ?? 0);
 $nonce      = trim(strip_tags($_POST['nonce'] ?? ''));
 
-if (empty($source_url) || empty($timestamp) || $nonce === '') {
+if (empty($source_url_raw) || empty($timestamp) || $nonce === '') {
     http_response_code(400);
     die("[!] ERROR: Missing Proof-of-Work payload.");
 }
@@ -24,13 +25,13 @@ if (abs($current_time - $timestamp) > 300) {
     die("[!] REJECTED: Timestamp expired or node clocks are out of sync.");
 }
 
-$parsed_url = parse_url($source_url);
-$host_domain = $parsed_url['host'] ?? '';
-
-if (!preg_match('/\.onion$/i', $host_domain) && $host_domain !== 'localhost' && $host_domain !== '127.0.0.1') {
+$policy_error = null;
+$source_url = deaddrop_normalize_and_validate_peer_url($source_url_raw, $config, $policy_error);
+if ($source_url === null) {
     http_response_code(403);
-    die("[!] PROTOCOL REJECTED: Only external Darknet (.onion) networks are allowed.");
+    die("[!] PROTOCOL REJECTED: " . $policy_error);
 }
+$host_domain = deaddrop_url_host($source_url);
 
 // 📊 AUTO-SCALING DEFENSE QUEUE METRICS
 $queue_count = $db->query("SELECT COUNT(*) FROM ping_queue")->fetchColumn();
@@ -60,11 +61,11 @@ if ($queue_count > 200) {
 
 try {
     $stmt = $db->prepare("INSERT INTO ping_queue (source_url) VALUES (:url)");
-    $stmt->execute([':url' => rtrim($source_url, '/')]);
+    $stmt->execute([':url' => $source_url]);
     
     // 📡 AIRGAPPED TELEGRAM BRIDGE (Routed strictly via Tor SOCKS5 Proxy)
     if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
-        $msg_tg = "📡 RADAR INTRUSION: Valid ping/knock received from:\n" . rtrim($source_url, '/');
+        $msg_tg = "📡 RADAR INTRUSION: Valid ping/knock received from:\n" . $source_url;
         $url_tg = "https://api.telegram.org/bot" . $config['tg_token'] . "/sendMessage";
         
         $chTg = curl_init($url_tg);

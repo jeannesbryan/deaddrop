@@ -4,24 +4,51 @@
 // ==========================================
 
 // ⚙️ 1. NODE CONFIGURATION
-$config = [
+// Keep this webroot file non-secret. Put real production values in /etc/deaddrop/config.php.
+$default_config = [
     'node_name'   => 'YOUR_NODE_NAME',
-    'node_url'    => 'http://your-onion-address.onion/deaddrop', 
-    'admin_hash'  => 'YOUR_ADMIN_PASSWORD_HASH', 
+    'node_url'    => 'http://your-onion-address.onion/deaddrop',
+    'admin_hash'  => 'YOUR_ADMIN_PASSWORD_HASH',
     'max_outbox'  => 50,
-    'db_path'     => __DIR__ . '/data/deaddrop.sqlite',
-    
+
+    // Sensitive SQLite storage outside webroot
+    'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
+
+    // Sensitive backup storage outside webroot
+    'backup_path' => '/var/backups/deaddrop',
+    'backup_retention' => 7,
+    'backup_include_config' => true,
+
+    // 🛡️ NETWORK POLICY
+    // Production default: reject localhost/127.0.0.1 peers. Set true only in local lab/dev.
+    'allow_local_peers' => false,
+
     // 📡 TELEGRAM BRIDGE CONFIGURATION (Optional)
-    'tg_on'       => false, // Change to true to enable 
+    'tg_on'       => false,
     'tg_token'    => 'YOUR_TELEGRAM_BOT_TOKEN',
     'tg_chat'     => 'YOUR_TELEGRAM_CHAT_ID'
 ];
 
-// 🛡️ 2. DATABASE INITIALIZATION & WAL MODE ARMOR
-try {
-    if (!is_dir(dirname($config['db_path']))) {
-        mkdir(dirname($config['db_path']), 0777, true);
+$config_path = getenv('DEADDROP_CONFIG') ?: '/etc/deaddrop/config.php';
+$config = $default_config;
+
+if (is_readable($config_path)) {
+    $local_config = require $config_path;
+    if (is_array($local_config)) {
+        $config = array_replace($config, $local_config);
     }
+}
+
+$config['config_path'] = $config_path;
+
+// 🛡️ 2. DATABASE INITIALIZATION & WAL MODE ARMOR
+umask(0077);
+try {
+    $db_dir = dirname($config['db_path']);
+    if (!is_dir($db_dir)) {
+        mkdir($db_dir, 0700, true);
+    }
+    @chmod($db_dir, 0700);
 
     $db = new PDO("sqlite:" . $config['db_path']);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);

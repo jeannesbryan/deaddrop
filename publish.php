@@ -3,10 +3,86 @@
 // 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE (v6.0 - Strict Quantum Ledger)
 // ==========================================
 require_once 'db.php';
+require_once 'net.php';
+require_once 'outbox.php';
 
 function terminal_error($message) {
     http_response_code(400);
-    die("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='theme-color' content='#110818'><title>Error</title><link href='assets/torminal.css' rel='stylesheet'></head><body class='t-crt' style='padding-top:10vh;'><div class='t-container t-box-md'><div class='t-alert danger mb-4 font-bold'>$message</div><a href='index.php' class='t-btn outline'>[ RETURN ]</a></div></body></html>");
+    die("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='theme-color' content='#110818'><title>Error</title><link href='assets/torminal.css' rel='stylesheet'></head><body class='t-crt'><div class='t-center-screen'><div class='t-container t-box-md'><div class='t-alert danger mb-4 font-bold'>$message</div><a href='index.php' class='t-btn outline'>[ RETURN ]</a></div></div></body></html>");
+}
+
+
+function decrypt_alias($payload, $key_string) {
+    if (strpos($payload, 'ENC:') !== 0) return $payload; // Legacy plaintext alias support
+
+    $data = base64_decode(substr($payload, 4), true);
+    if ($data === false || strlen($data) <= SODIUM_CRYPTO_SECRETBOX_NONCEBYTES) {
+        return "[ENCRYPTED_BLOB]";
+    }
+
+    $nonce = substr($data, 0, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $ciphertext = substr($data, SODIUM_CRYPTO_SECRETBOX_NONCEBYTES);
+    $key = hash('sha256', $key_string, true);
+    $dec = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
+
+    return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
+}
+
+function normalize_alias($alias) {
+    $alias = ltrim(trim((string)$alias), '@');
+    return strtolower(preg_replace('/[^a-zA-Z0-9_-]/', '', $alias));
+}
+
+function find_peer_keys_by_alias(PDO $db, string $alias, string $master_key) {
+    $target_alias = normalize_alias($alias);
+    if ($target_alias === '') return false;
+
+    $stmt = $db->query("SELECT onion_url, alias, public_key, pq_public FROM following");
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $peer) {
+        $stored_alias = decrypt_alias((string)($peer['alias'] ?? ''), $master_key);
+        $stored_alias = normalize_alias($stored_alias);
+
+        if ($stored_alias !== '' && hash_equals($target_alias, $stored_alias)) {
+            return $peer;
+        }
+    }
+
+    return false;
+}
+
+function find_peer_keys_by_url(PDO $db, string $target_url, array $config) {
+    $policy_error = null;
+    $clean = deaddrop_normalize_and_validate_peer_url($target_url, $config, $policy_error);
+    if ($clean === null) {
+        terminal_error("[ E2EE ERROR ] Invalid target endpoint: " . $policy_error);
+    }
+
+    $candidates = array_values(array_unique(array_filter([
+        rtrim(trim($target_url), '/'),
+        $clean
+    ])));
+
+    $stmt = $db->prepare("SELECT public_key, pq_public FROM following WHERE onion_url = :url LIMIT 1");
+    foreach ($candidates as $url) {
+        $stmt->execute([':url' => $url]);
+        $keys = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($keys) return $keys;
+    }
+
+    return false;
+}
+
+function decode_public_key_or_fail($key, string $label) {
+    if (empty($key)) {
+        terminal_error("[ E2EE ERROR ] $label is missing. Run worker.php first to sync peer keys.");
+    }
+
+    $decoded = base64_decode((string)$key, true);
+    if ($decoded === false || strlen($decoded) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) {
+        terminal_error("[ E2EE ERROR ] $label is invalid or corrupted.");
+    }
+
+    return $decoded;
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -37,6 +113,7 @@ if ($ttl_hours > 0) {
 $target = trim(strip_tags($_POST['target'] ?? ''));
 $is_private_drop = false;
 $is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1');
+$has_media_upload = (isset($_FILES['media']) && ($_FILES['media']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK);
 
 if (!empty($target)) {
     $is_private_drop = true;
@@ -44,19 +121,20 @@ if (!empty($target)) {
     
     if (strpos($target, '@') === 0) {
         $alias = substr($target, 1);
-        $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE alias = :alias LIMIT 1");
-        $stmt_key->execute([':alias' => $alias]);
-        $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
-        if (!$target_keys) terminal_error("[ E2EE ERROR ] Peer alias not registered in active radar.");
+        $target_keys = find_peer_keys_by_alias($db, $alias, $input_pass);
+        if (!$target_keys) {
+            terminal_error("[ E2EE ERROR ] Peer alias not registered in active radar or alias cannot be decrypted with this key.");
+        }
     } else {
-        $stmt_key = $db->prepare("SELECT public_key, pq_public FROM following WHERE onion_url = :url LIMIT 1");
-        $stmt_key->execute([':url' => rtrim($target, '/')]);
-        $target_keys = $stmt_key->fetch(PDO::FETCH_ASSOC);
+        $target_keys = find_peer_keys_by_url($db, $target, $config);
         if (!$target_keys) terminal_error("[ E2EE ERROR ] Target Public Key not found in radar.");
     }
 
-    $target_pub_key = base64_decode($target_keys['public_key']);
-    $target_pq_pub  = !empty($target_keys['pq_public']) ? base64_decode($target_keys['pq_public']) : null;
+    $target_pub_key = decode_public_key_or_fail($target_keys['public_key'] ?? null, 'Target Public Key');
+    $target_pq_pub  = null;
+    if (!empty($target_keys['pq_public'])) {
+        $target_pq_pub = decode_public_key_or_fail($target_keys['pq_public'], 'Target PQ Public Key');
+    }
 
     // 🛡️ DENIABLE UNIFORM NOISE PADDING (4KB BLOCK ALIGNMENT)
     $block_size = 4096; 
@@ -93,6 +171,13 @@ if (!empty($target)) {
 
     // 🧬 DOUBLE-LEDGER BINDING: Fuse pristine plaintext with ciphertext envelope
     $content = $pristine_plaintext . "[[SPLIT_LEDGER]]" . $encrypted_vault_envelope;
+}
+
+// 🛡️ PRIVATE MEDIA LOCKDOWN
+// Until encrypted media envelopes are implemented, never attach public /media URLs to private drops.
+// Otherwise outbox.json can leak a tracking-capable media URL beside an encrypted DM envelope.
+if ($is_private_drop && $has_media_upload) {
+    terminal_error("[ E2EE ERROR ] Private media attachments are disabled until encrypted media support is implemented. Send this as a text-only secure drop, or publish media publicly.");
 }
 
 // 📷 EXIF-STRIPPED MEDIA PROCESSING
@@ -139,40 +224,8 @@ try {
         ':expires' => $expires_at,
         ':waktu'   => $now_utc
     ]);
-
-    // Reconstruct outbox.json for external workers
-    $stmt_out = $db->prepare("
-        SELECT id, content, media_url, reply_to, status, expires_at, timestamp FROM (
-            SELECT remote_id as id, content, media_url, reply_to, status, expires_at, created_at as timestamp 
-            FROM timeline WHERE is_local = 1 
-            UNION ALL 
-            SELECT remote_id as id, content, media_url, reply_to, status, expires_at, created_at as timestamp 
-            FROM inbox WHERE is_local = 1 
-        ) ORDER BY timestamp DESC LIMIT :limit
-    ");
-    $stmt_out->bindValue(':limit', $config['max_outbox'], PDO::PARAM_INT);
-    $stmt_out->execute();
-    $my_posts = $stmt_out->fetchAll(PDO::FETCH_ASSOC);
-
-    // 🛡️ SURGICAL INTERVENTION: Eradicate internal plaintext before broadcasting to outbox.json
-    foreach ($my_posts as &$export_item) {
-        if (strpos($export_item['content'], '[[SPLIT_LEDGER]]') !== false) {
-            $ledger_parts = explode('[[SPLIT_LEDGER]]', $export_item['content']);
-            $export_item['content'] = $ledger_parts[1]; // Strictly broadcast the ciphertext envelope!
-        }
-    }
-
-    $nano_pub_feed = [
-        "protocol"     => "Nano-Pub",
-        "author"       => $config['node_name'],
-        "domain"       => $config['node_url'],
-        "public_key"   => $config['public_key'],
-        "pq_public"    => $config['pq_public'] ?? null, 
-        "last_updated" => $now_utc,
-        "posts"        => $my_posts
-    ];
-
-    file_put_contents(__DIR__ . '/outbox.json', json_encode($nano_pub_feed, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    // Rebuild outbox.json via centralized atomic helper.
+    rebuild_outbox($db, $config);
 
     $redirect_target = $is_private_drop ? 'dm.php' : 'index.php';
     header("Location: $redirect_target?status=success");

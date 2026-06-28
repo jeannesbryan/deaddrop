@@ -1,320 +1,358 @@
 # > DEADDROP_ <img src="assets/favicon-32x32.png" width="32" align="center">
-**The Tor-Native Asynchronous Social Protocol (Nano-Pub)**
+**Tor-native asynchronous micro-publishing for low-power nodes.**
 
-![Status-Underground](https://img.shields.io/badge/Status-Underground-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
-![PHP](https://img.shields.io/badge/PHP_8.2+-Strict_Post_Quantum-777BB4?style=for-the-badge&logo=php)
-![SQLite](https://img.shields.io/badge/SQLite-Zero_Knowledge_RAM_Vault-003B57?style=for-the-badge&logo=sqlite)
+![Status](https://img.shields.io/badge/Status-Experimental-00ff66?style=for-the-badge&logo=tor&logoColor=7D4698&color=110818)
+![PHP](https://img.shields.io/badge/PHP-8.2+-777BB4?style=for-the-badge&logo=php)
+![SQLite](https://img.shields.io/badge/SQLite-Local_First-003B57?style=for-the-badge&logo=sqlite)
+![Tor](https://img.shields.io/badge/Tor-v3_onion_required-7D4698?style=for-the-badge&logo=tor)
 
-DeadDrop is an extreme, static-first, zero-JS, and post-quantum social syndication protocol designed for Tor networks and low-end hardware. It operates on the custom **Nano-Pub** protocol, turning your server into a "Sovereign Node" without the bloat of traditional federated networks. 
+DeadDrop is an experimental **Tor-native Nano-Pub node** built with PHP, SQLite, and static `outbox.json` syndication. It is designed for small VPS instances, Armbian boxes, and other low-resource machines where heavy federated stacks are impractical.
 
-To guarantee absolute operational security, the protocol is hardened with advanced defenses: **Zero-Knowledge Volatile RAM Extrapolation** to protect data at rest, **Deniable Uniform Padding** to defeat ISP traffic analysis, **SOCKS5 Persistent Circuit Pooling** for extreme asynchronous Tor syncs, and a **3-Layer Hybrid Post-Quantum Encapsulation** framework to shield private payloads against future decryption.
-
----
-
-### ⚠️ DISCLAIMER: CASUAL PROJECT AHEAD
-> **Please Read Before Deploying!**
-> This is a passionate **hobby project** built during my free time. It is **NOT** a professional, enterprise-grade software audited by cybersecurity firms. The codebase is highly experimental and designed for tinkering, learning, and having fun in the darknet ecosystem. Use it at your own risk. Expect bugs, raw PHP scripts, and CLI-based interventions. 
+The project focuses on a simple idea: publish locally, expose a static feed, and let a background courier pull updates from trusted peers over Tor. The web UI is intentionally minimal and designed to remain usable in restrictive browser settings.
 
 ---
 
-### ⚙️ THE ARCHITECTURE: ZERO-PUSH, ZERO-JS
-Unlike ActivityPub (Mastodon) that forces real-time, heavy two-way server communications, DeadDrop reverses the paradigm:
-1. **Static-First:** You post to your timeline. The engine generates a highly optimized `outbox.json`. That's it. It costs 0% CPU when visitors read your feed.
-2. **SOCKS5 Persistent Pooling:** The background courier (`worker.php`) utilizes asynchronous `curl_multi_init()` over Tor. It holds a single SOCKS5 tunnel open (Keep-Alive) and pulls data from up to 100 `.onion` peers concurrently in seconds, bypassing Tor Daemon TCP handshaking strain.
-3. **Pure Torminal UI (Mobile Ready):** The frontend is strictly built with HTML and CSS, fully responsive for touch devices. **Zero JavaScript.** It is designed to work flawlessly on Tor Browser's "Safest" mode.
-4. **Isolated Command Center:** Dedicated `radar.php` dashboard for managing network syndication, peer renaming, and autonomous path-healing topologies.
-5. **Stateless Nano-Paging:** Infinite timeline rendering managed entirely by PHP and SQLite `OFFSET`, ensuring browsers never crash from DOM overload.
-6. **Zero-Knowledge RAM Vault:** Absolute data-at-rest protection. The SQLite database strictly stores raw, unbreakable ciphertexts; plaintext is NEVER written to the eMMC. The inbox temporarily extrapolates messages into volatile RAM only when the operator inputs the master security key. Upon refreshing, the memory is instantly purged.
-7. **Double-Ledger Engine:** Outgoing private drops natively bind a split-ledger payload, retaining pristine plaintext for the local author while stripping it entirely before broadcasting the encrypted envelope to the public `outbox.json`.
-8. **Post-Quantum Hybrid Armor:** Standard E2EE is retired. Messages are now sealed inside a 3-Layer Vault: **XChaCha20-Poly1305** (Payload) → **Libsodium X25519** (Layer 1 KEM) → **ML-KEM Kyber Mockup** (Layer 2 KEM), securing communication against future Shor's Algorithm decryption.
-9. **Deniable Uniform Padding:** Total immunity against ISP Traffic Analysis. All outgoing encrypted payloads are cryptographically injected with digital noise to lock the footprint at an absolute **4096-byte (4KB) block size**.
-10. **Auto-Scaling Hashcash Defense:** Incoming network knocks to the gateway are guarded by a dynamic SHA-256 Proof-of-Work puzzle. The difficulty scales exponentially during DDoS attempts to burn botnet CPU.
-11. **Rotational Auto-Backup:** Built-in daily `tar.gz` archiver with strict 7-day retention to protect host eMMC while ensuring node recoverability.
-12. **Airgapped Telegram Bridge:** Built-in silent API triggers to notify your mobile device of new authenticated DMs or valid gateway intrusions. All API dispatches are strictly routed through the Tor SOCKS5 proxy to guarantee zero clearnet IP leaks.
-13. **Cron Jitter (Anti-Timing Analysis):** Background daemons autonomously inject randomized sleep delays (1-10 minutes) before execution to defeat data center traffic analysis and chronometric tracking.
-14. **Physical Data Vaporization:** Deletions are absolute. SQLite uses `PRAGMA secure_delete = FAST;` to overwrite purged messages with zeros, while media files are brutally destroyed using native Linux `shred` (3-pass overwrite) to defeat forensic disk recovery.
-15. **Social Graph Obfuscation:** Your address book is classified. Peer aliases (Petnames) are symmetrically encrypted at rest using Libsodium. Forensic analysis of the database reveals zero human-readable relational data.
-16. **Tor PoW Anti-DDoS & Nginx Cloaking:** Native Tor v3 Proof-of-Work puzzles aggressively burn botnet CPU, while Nginx is cloaked and stripped of identifiable signatures to prevent Layer-7 exhaustion.
-17. **Stealth Binding & UFW Armor:** The web server strictly binds to localhost (`127.0.0.1`), entirely disconnected from the Clearnet, sealed behind a strict UFW deny-all firewall.
-18. **ZRAM & Hardware Diet:** Built-in instructions to utilize LZ4 ZRAM compression, making it possible to run safely on a 256MB/1GB Set-Top Box without Out-Of-Memory (OOM) crashes.
+## ⚠️ Security Status
+
+DeadDrop is a hobby/learning project and **has not been professionally audited**. Treat it as experimental software. Do not rely on it for life-critical, journalist-source-protection, dissident-safety, or high-risk operational security without an independent security review.
+
+Current security posture:
+
+- Uses Libsodium primitives for private-drop encryption experiments.
+- Uses Tor hidden services for network reachability.
+- Uses SQLite with local storage and optional off-webroot deployment.
+- Uses server-side authentication and short-lived unlock sessions.
+- Applies defensive limits against oversized remote `outbox.json` responses.
+- Requires strict Tor v3 `.onion` peer validation by default.
+
+Important limitations:
+
+- The “post-quantum” layer is currently a **placeholder/mockup**, not real ML-KEM/Kyber security.
+- The project is **not zero-knowledge** in the formal cryptographic sense.
+- Outgoing private drops may keep a local sender-side plaintext copy for usability, while the public outbox exports only the encrypted envelope.
+- Metadata reduction and deletion features are best-effort, not a guarantee against forensic recovery on all storage media.
+- Telegram bridge integration, if enabled, contacts Telegram’s infrastructure through Tor but still creates third-party metadata exposure.
+
+See [`SECURITY_NOTES.md`](SECURITY_NOTES.md) before deploying.
 
 ---
 
-### 🚀 COMPREHENSIVE INSTALLATION GUIDE
-DeadDrop is designed for extreme efficiency and can run on headless Linux environments like a 256MB RAM NAT VPS or an Armbian Set-Top Box. Follow these exact steps to build your node from scratch.
+## Architecture
 
-#### PHASE 1: System Prep & Autostart Armor
-**Cryptographic Floor:** The underlying ML-KEM (Kyber) mathematical polyfills strictly require **PHP 8.2 or higher**. Attempting to deploy on PHP 8.1 or older will trigger fatal syntax parser errors.
+DeadDrop uses a pull-based Nano-Pub model:
 
-First, update your system and install the foundational packages. We explicitly target the modern PHP 8.2+ ecosystem to ensure the FastCGI environment supports complex post-quantum cryptography.
+1. **Local publishing** writes posts into SQLite.
+2. **Static export** rebuilds `outbox.json` for public syndication.
+3. **Worker sync** periodically pulls peer `outbox.json` files over Tor.
+4. **Radar** tracks peers, aliases, public keys, and mutual status.
+5. **Inbox** isolates private encrypted drops from the public timeline.
 
-```bash
-apt update && apt upgrade -y
-apt install -y software-properties-common curl git nano nginx sqlite3 tor libimage-exiftool-perl zram-tools ufw
-```
+This avoids always-on push fanout. Visitors can fetch `outbox.json` or the public profile without forcing expensive real-time federation behavior.
 
-Now, inject the PHP repository and install the strict PHP 8.2 ecosystem:
-```bash
-# Add SURY repository for the latest PHP builds (Debian/Ubuntu)
-add-apt-repository ppa:ondrej/php -y
-apt update
+---
 
-# Install PHP 8.2 and its required sovereign extensions
-apt install -y php8.2-fpm php8.2-sqlite3 php8.2-curl php8.2-xml php8.2-mbstring
-```
+## Features
 
-**Firewall Lockdown (Crucial):** Seal all public ports except SSH. Your node communicates strictly via Tor localhost.
-```bash
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow 22/tcp
-ufw enable
-```
+### Nano-Pub Static Outbox
+DeadDrop exports posts into a static `outbox.json`. Public reads are cheap and suitable for low-power hosts.
 
-**ZRAM Memory Compression (Anti-OOM):**
-```bash
-nano /etc/default/zramswap
-# Add these lines to compress 50% of your RAM dynamically:
-ALGO=lz4
-PERCENT=50
-# Save and execute:
-systemctl restart zramswap
-```
+### Tor v3 Peer Policy
+Production mode accepts only valid Tor v3 `.onion` peers by default. Localhost peers are disabled unless explicitly allowed for lab testing.
 
-*Note: Libsodium (E2EE cryptography) is required by DeadDrop but is natively compiled into the PHP 8.2 core, requiring no separate package.*
+### Background Courier
+`worker.php` pulls peer feeds through Tor SOCKS5 using concurrent cURL requests. Remote responses are capped to reduce memory-exhaustion risk.
 
-*Note: If your hosting provider pre-installed `apache2`, it will conflict with Nginx. Eradicate it permanently:*
-```bash
-systemctl stop apache2
-systemctl disable apache2
-apt purge apache2 -y
-```
+### Private Drops
+Private drops are encrypted as a Libsodium-based envelope using XChaCha20-Poly1305 for payload encryption and X25519 sealed boxes for key wrapping.
 
-To guarantee that Nginx and Tor automatically resurrect whenever your node reboots, enforce global autostart immediately:
-```bash
-systemctl enable --now nginx tor php8.2-fpm
-```
+### PQ Placeholder Field
+The `pq_public` / `pq_private` fields are reserved for future post-quantum work. Current “PQ” behavior is a structural placeholder and must not be described as real ML-KEM security.
 
-#### PHASE 2: Extreme Hardware Tuning & Engine Hardening
-To prevent Out-Of-Memory (OOM) crashes on devices with limited RAM (like a 256MB STB), we must enforce a strict background diet.
+### Private Media Lockdown
+Private media attachments are disabled until encrypted-media support exists. Public media remains supported for public posts.
 
-**1. Limit Nginx Workers:**
-```bash
-nano /etc/nginx/nginx.conf
-```
-Find `worker_processes` and change it to `1`:
-```nginx
-worker_processes 1;
-```
-Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
+### Atomic Outbox Writes
+`outbox.json` is written through a temporary file and `rename()` to reduce the chance of partial/corrupted feed exports.
 
-**2. PHP Hardening (Disable Shell Execution):**
-```bash
-nano /etc/php/8.2/fpm/php.ini
-```
-Find and modify these exact lines to strip terminal access:
-```ini
-expose_php = Off
-disable_functions = exec,system,passthru,shell_exec,proc_open,popen,show_source
-```
-Save and exit.
+### Off-Webroot Storage
+Recommended deployments keep SQLite data, backups, and secrets outside `/var/www/html`.
 
-**3. Enable PHP-FPM Hibernation:**
-Open the pool configuration for PHP 8.2:
-```bash
-nano /etc/php/8.2/fpm/pool.d/www.conf
-```
-Press `Ctrl+W` to find `pm = ` and surgically change the surrounding settings to this exact block:
-```ini
-pm = ondemand
-pm.max_children = 5
-pm.process_idle_timeout = 10s
-pm.max_requests = 200
-```
-Save and exit. Restart the stack to apply the diet and armor:
-```bash
-systemctl restart nginx
-systemctl restart php8.2-fpm
-```
+### Short-Lived Unlock Sessions
+Admin unlock state is stored server-side for a short period instead of carrying the master password in hidden form fields.
 
-#### PHASE 3: The Darknet Gateway (Tor Setup)
-We configure Tor to expose our web server locally and ignite the Anti-DDoS defense.
-```bash
-nano /etc/tor/torrc
-```
-Scroll to the hidden services section and add these lines:
+### Hashcash Knock Gate
+`ping.php` can require a SHA-256 proof-of-work puzzle before accepting peer knocks. This is a throttling tool, not a full DDoS solution.
+
+---
+
+## Recommended Deployment Layout
+
 ```text
-HiddenServiceDir /var/lib/tor/hidden_service/
-HiddenServicePort 80 127.0.0.1:80
-HiddenServicePoWDefensesEnabled 1
-HiddenServicePoWQueueRate 5
-```
-Save and exit. Restart Tor to apply the configuration:
-```bash
-systemctl restart tor
+/var/www/html/deaddrop/      # public PHP app and static assets
+/var/www/html/deaddrop/media # public media for public posts
+/var/lib/deaddrop/           # private SQLite database
+/var/backups/deaddrop/       # private rotating backups
+/etc/deaddrop/config.php     # private node config/secrets
+/run/deaddrop-sessions/      # tmpfs-backed PHP sessions, if available
 ```
 
-**Viewing Your Permanent Address:**
-To discover the permanent `.onion` address automatically generated by the system, run:
-```bash
-sudo cat /var/lib/tor/hidden_service/hostname
+The public webroot should not contain SQLite databases, backup archives, node secrets, or helper files intended only for inclusion by other PHP scripts.
+
+---
+
+## Live Server File Policy
+
+A clean v10 production node should keep only runtime web files in `/var/www/html/deaddrop`. Helper scripts that are included by PHP may remain in the directory, but they must be blocked from direct browser access by Nginx.
+
+### Keep in the live webroot
+
+```text
+/var/www/html/deaddrop/
+├── assets/
+├── auth.php      # internal auth/session helper; block direct web access
+├── db.php        # bootstrap only; reads /etc/deaddrop/config.php; block direct web access
+├── delete.php
+├── dm.php
+├── index.php
+├── net.php       # internal network policy helper; block direct web access
+├── offload.php   # CLI/cron only; block direct web access
+├── outbox.php    # internal outbox rebuild helper; block direct web access
+├── ping.php
+├── profile.php
+├── publish.php
+├── radar.php
+└── worker.php    # CLI/cron only; block direct web access
 ```
 
-***
+`outbox.json` is generated by the application and must remain publicly readable because it is the Nano-Pub feed. `media/` may remain public for public-post attachments.
 
-#### 💎 OPTIONAL: Enforcing a Vanity / Custom Tor Domain (v3)
-If you already possess a custom vanity `.onion` domain, **do not** let Tor run the randomly generated address. Follow these strict intervention steps to swap the cryptographical keys safely without system conflicts:
+### Keep outside the webroot
 
-1. **Stop the Tor daemon completely:**
-```bash
-   sudo systemctl stop tor
-```
-2. **Eradicate the randomly generated default keys:**
-```bash
-   sudo rm -rf /var/lib/tor/hidden_service/*
-```
-3. **Inject your custom keys:**
-   A custom Tor v3 domain always consists of three crucial files: `hostname`, `hs_ed25519_public_key`, and the highly sensitive `hs_ed25519_secret_key`. Move all three files directly into `/var/lib/tor/hidden_service/`.
-4. **Restore strict system ownership and permissions:**
-   Tor will aggressively refuse to boot if security permissions are loose. Execute these exact commands:
-```bash
-   sudo chown -R debian-tor:debian-tor /var/lib/tor/hidden_service/
-   sudo chmod 700 /var/lib/tor/hidden_service/
-   sudo chmod 600 /var/lib/tor/hidden_service/hs_ed25519_secret_key
-```
-5. **Ignite Tor and verify propagation:**
-```bash
-   sudo systemctl start tor
-   sudo systemctl status tor
+```text
+/etc/deaddrop/config.php        # actual private config/secrets
+/var/lib/deaddrop/deaddrop.sqlite
+/var/backups/deaddrop/
+/run/deaddrop-sessions/
 ```
 
-***
+The actual `config.php` should not live in `/var/www/html/deaddrop`. For an open-source repository, publish only `config.example.php`.
 
-#### PHASE 4: Subfolder Deployment & Directory OpSec
-**Crucial Architectural Note:** DeadDrop is explicitly deployed inside a subfolder (`/var/www/html/deaddrop`) rather than the absolute root. This isolates your timeline strictly to `yourdomain.onion/deaddrop`, leaving the primary root `/var/www/html` wide open for you to construct a personalized landing page.
+### Remove from live server after setup
 
-Pull the DeadDrop codebase directly into the subfolder:
-```bash
-git clone https://github.com/jeannesbryan/deaddrop.git /var/www/html/deaddrop
+```text
+keygen.php
+password-generator.php
+migrate.sh
 ```
 
-**Strict Permission Enforcement (OpSec Protocol):**
-To prevent server-side vulnerabilities and ensure the PHP backend can autonomously write to the database, save media, and rotate backups, you must construct the required directories and enforce precise file permissions:
+`keygen.php` and `password-generator.php` are init-only utilities. `migrate.sh` is only useful when migrating an older node; for a fresh v10 reinstall it is not needed on the live server. If these files are kept in the repository, place them under a `scripts/` or `tools/` directory rather than deploying them to the live webroot.
 
-```bash
-# 1. Construct dynamic storage directories
-mkdir -p /var/www/html/deaddrop/media
-mkdir -p /var/www/html/deaddrop/backup
+### Documentation files
 
-# 2. Assign absolute ownership to the web server
-chown -R www-data:www-data /var/www/html/deaddrop
-
-# 3. Enforce baseline read/execute permissions (Safe defaults)
-find /var/www/html/deaddrop -type d -exec chmod 755 {} \;
-find /var/www/html/deaddrop -type f -exec chmod 644 {} \;
-
-# 4. Grant specific write access to dynamic storage target folders
-chmod -R 775 /var/www/html/deaddrop/data
-chmod -R 775 /var/www/html/deaddrop/media
-chmod -R 775 /var/www/html/deaddrop/backup
+```text
+README.md
+CHANGELOG.md
+SECURITY_NOTES.md
+SECURITY_CLAIMS_MAPPING.md
 ```
 
-Create the Nginx routing block:
-```bash
-nano /etc/nginx/sites-available/deaddrop
-```
-Paste the following configuration *(replace the `.onion` address accordingly)*:
+These are useful for the source repository, but optional on STB/VPS live deployments.
+
+---
+
+## Nginx Configuration: Tor-Only + v10 Hardening
+
+DeadDrop is intended to be served through Tor, with Nginx bound only to localhost. The PHP application can still render public pages and `outbox.json`, but direct browser access to helper scripts, private storage, backup files, SQLite files, and dotfiles must be blocked.
+
+Use this as the combined v10 server block:
+
 ```nginx
 server {
     listen 127.0.0.1:80;
     server_tokens off;
     client_max_body_size 2M;
-    server_name your_generated_address.onion;
-    root /var/www/html; # Root remains available for landing pages
+
+    server_name YOUR_ONION_ADDRESS.onion;
+
+    root /var/www/html;
     index index.php index.html;
 
+    # Disable directory listing globally.
+    autoindex off;
+
+    # v10: block include-only / CLI-only / secret-bearing PHP files.
+    # Keep this block before the generic PHP-FPM handler.
+    location ~ ^/deaddrop/(db|auth|net|outbox|worker|offload|keygen|password-generator)\.php$ {
+        return 403;
+    }
+
+    # v10: block private storage paths if old deployments still contain them.
+    # New deployments should keep these outside /var/www/html entirely.
+    location ^~ /deaddrop/data/ {
+        return 403;
+    }
+
+    location ^~ /deaddrop/backup/ {
+        return 403;
+    }
+
+    location ^~ /deaddrop/keys/ {
+        return 403;
+    }
+
+    # Defense-in-depth: block accidental database, backup, env, log, and swap files.
+    location ~* \.(sqlite|sqlite3|db|bak|backup|old|swp|env|ini|log)$ {
+        return 403;
+    }
+
+    # Block hidden files and directories such as .git and .env.
+    location ~ /\. {
+        return 403;
+    }
+
+    # Normal public routing.
     location / {
         try_files $uri $uri/ =404;
     }
 
+    # PHP-FPM handler.
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.2-fpm.sock; # Strictly bound to PHP 8.2 FastCGI
-    }
-
-    # Brutally block public access to sensitive DeadDrop subdirectories
-    location ~ ^/deaddrop/(data|backup|keys)/ {
-        deny all;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
     }
 }
 ```
-Enable the site block and remove default clutter:
+
+`outbox.json` must remain public because it is the Nano-Pub feed. The `media/` directory may remain public for public-post attachments. Private DM attachments are disabled until encrypted media support is implemented.
+
+For production, keep SQLite, backups, and `/etc/deaddrop/config.php` outside the webroot; the Nginx blocks above are defense-in-depth for older installs or accidental file placement.
+
+
+---
+
+## PHP Session Storage on tmpfs
+
+DeadDrop v10 uses short-lived server-side PHP sessions for the unlock flow. This prevents the master password from being carried through hidden form fields.
+
+For low-power nodes and eMMC-based devices, session files should live in `/run` so they are stored on tmpfs instead of persistent storage.
+
 ```bash
-rm /etc/nginx/sites-enabled/default
-ln -s /etc/nginx/sites-available/deaddrop /etc/nginx/sites-enabled/
-systemctl restart nginx
+sudo install -o www-data -g www-data -m 700 -d /run/deaddrop-sessions
+echo 'd /run/deaddrop-sessions 0700 www-data www-data -' | sudo tee /etc/tmpfiles.d/deaddrop-sessions.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/deaddrop-sessions.conf
 ```
 
-#### PHASE 5: The Post-Quantum Keygen Ritual
-To ignite the Hybrid KEM architecture and register your Node Identity into SQLite, you MUST execute the sacred ritual strictly via CLI before opening the browser:
-```bash
-sudo -u www-data php /var/www/html/deaddrop/keygen.php
-```
+`auth.php` automatically uses `/run/deaddrop-sessions` when the directory exists and is writable by `www-data`. If the directory is unavailable, PHP falls back to the default session path.
 
-#### PHASE 6: Master Key & Identity Configuration
-Before opening the core configuration, you must generate a secure Bcrypt hash for your Master Key. To maintain strict OpSec, execute the generator strictly via CLI:
-```bash
-php /var/www/html/deaddrop/password-generator.php
-```
-Copy the green cryptographic hash outputted to your terminal. Then, open the configuration file:
-```bash
-nano /var/www/html/deaddrop/db.php
-```
-Locate the `$config` array at the top. Paste your generated hash into the `'admin_hash'` variable. Next, insert your complete subfolder endpoint into the `'node_url'` variable. You can also optionally enable the Telegram Bridge here for passive security intrusion alerts:
+---
+
+## Configuration Notes
+
+Use a private config file outside the webroot:
+
 ```php
-'node_url'   => 'http://your_onion_address.onion/deaddrop',
+<?php
+return [
+    'node_name'   => 'YOUR_NODE_NAME',
+    'node_url'    => 'http://your-v3-onion-address.onion/deaddrop',
+    'admin_hash'  => 'YOUR_BCRYPT_ADMIN_HASH',
+    'max_outbox'  => 50,
 
-// Optional Telegram Bridge Config:
-'tg_on'      => false, // Change to true to enable
-'tg_token'   => 'YOUR_BOT_TOKEN_HERE',
-'tg_chat'    => 'YOUR_CHAT_ID_HERE'
-```
-Save and exit.
+    'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
+    'backup_path' => '/var/backups/deaddrop',
+    'backup_retention' => 7,
+    'backup_include_config' => true,
 
-#### PHASE 7: The Autonomous Heartbeat (Cron Jobs)
-DeadDrop's backend runs autonomously in the background. To guarantee strict OpSec permissions and prevent cron environment failures, you MUST bind the scheduler to the web server's user (`www-data`) and use absolute execution paths. 
+    'allow_local_peers' => false,
 
-Open the restricted cron editor:
-```bash
-sudo crontab -u www-data -e
-```
-Paste these two target lines at the bottom to maintain syndication couriers and the rotational backup system:
-```bash
-# Pull data from active radar and execute Ephemeral Sweeper every 1 hour:
-0 * * * * /usr/bin/php /var/www/html/deaddrop/worker.php >> /var/www/html/deaddrop/data/worker.log 2>&1
-
-# Execute Hardware eMMC Diet Protocol (7-Day Backup Rotation) daily at midnight:
-0 0 * * * /usr/bin/php /var/www/html/deaddrop/offload.php >> /var/www/html/deaddrop/data/offload.log 2>&1
+    'tg_on'       => false,
+    'tg_token'    => '',
+    'tg_chat'     => ''
+];
 ```
 
-**Congratulations. Your Quantum-Vault Hardened Sovereign Node is now online.**
+For production, keep:
+
+```php
+'allow_local_peers' => false,
+```
+
+Only enable localhost peers in an isolated lab.
 
 ---
 
-### 📡 HOW TO FOLLOW OTHER NODES (SYNDICATION)
-To subscribe to another peer's timeline, simply navigate to the **[ RADAR ]** Command Center (`radar.php`) on your node and enter their fully-qualified `.onion` endpoint. 
+## Private Drop Model
 
-*Example of a valid peer target:*
+DeadDrop’s private-drop model is experimental and intentionally simple:
+
 ```text
-http://peer_onion_address_here.onion/deaddrop
+plaintext -> optional padding -> XChaCha20-Poly1305 ciphertext
+symmetric key -> X25519 sealed box
+optional second wrap -> placeholder field, not real PQ security
 ```
-You can assign them a custom Petname (`@alias`). The system features an **Anti-Duplicate Guard**, which strictly prevents you from accidentally routing private messages to the wrong node by reusing petnames.
 
-Once added, the background courier will asynchronously pull their updates. If the target node also appends your URL to their radar, a `[🤝 Mutual]` badge will automatically manifest in your Command Center.
+Incoming private drops are stored as ciphertext and decrypted only when the vault is unlocked. Outgoing private drops may keep a local plaintext copy for the sender’s own view, while the public `outbox.json` export strips the plaintext and publishes only the encrypted envelope.
+
+This is not a formal zero-knowledge system.
 
 ---
 
-### 🤝 CONTRIBUTING
-Feel free to fork, submit PRs, or open issues. Just remember the absolute doctrine: **Keep it static, keep it Tor-native, and strictly zero JS.**
+## Threat Model
 
-*Developed by [jeannesbryan](https://github.com/jeannesbryan) - We are ready for the quantum dawn.*
+DeadDrop attempts to reduce risk from:
+
+- casual web crawling,
+- accidental clearnet exposure when deployed behind Tor correctly,
+- oversized peer feed memory abuse,
+- public feed corruption during write interruptions,
+- accidental private-media leakage in `outbox.json`,
+- basic unauthorized admin access,
+- low-grade ping flooding.
+
+DeadDrop does **not** currently protect against:
+
+- a compromised host,
+- malicious PHP extensions or OS-level malware,
+- a stolen admin password,
+- browser compromise,
+- traffic correlation by powerful adversaries,
+- professional forensic recovery across all storage types,
+- cryptographic attacks caused by unaudited protocol design,
+- social graph discovery through operational mistakes,
+- metadata exposure from optional third-party integrations.
+
+---
+
+## Development Philosophy
+
+DeadDrop prefers:
+
+- boring, local-first components,
+- small PHP scripts over heavy services,
+- static syndication over real-time push,
+- explicit Tor routing,
+- low memory use,
+- deployability on cheap hardware,
+- honest security language over theatrical certainty.
+
+The aesthetic can stay cyberpunk. The security claims should stay precise.
+
+---
+
+## Contributing
+
+Issues, hardening patches, threat-model reviews, and documentation fixes are welcome.
+
+Security-related contributions should clearly state:
+
+- what risk is being reduced,
+- what attack scenario is still out of scope,
+- whether the patch changes the public `outbox.json` schema,
+- whether it affects old nodes or backward compatibility.
+
+---
+
+## Disclaimer
+
+DeadDrop is experimental software. Use it at your own risk. Run it only if you understand the tradeoffs of operating a Tor hidden service, storing secrets on a server, and using unaudited cryptographic application code.
+
