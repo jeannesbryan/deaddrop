@@ -1,6 +1,6 @@
 <?php
 // ==========================================
-// 🏴‍☠️ DEADDROP: THE GUARD & COURIER (v9.0 - Airgapped & Anti-Forensics)
+// DEADDROP: THE GUARD & COURIER (v11 - Schema v2+ Courier)
 // ==========================================
 if (php_sapi_name() !== 'cli') {
     http_response_code(403);
@@ -16,6 +16,7 @@ header('Content-Type: text/plain; charset=utf-8');
 // Never keep a remote outbox.json larger than 2 MB in memory.
 define('DEADDROP_WORKER_MAX_RESPONSE_BYTES', 2 * 1024 * 1024);
 define('DEADDROP_WORKER_MAX_POSTS_PER_NODE', 100);
+define('DEADDROP_SUPPORTED_OUTBOX_SCHEMA', 2);
 
 function format_bytes(int $bytes): string {
     if ($bytes >= 1048576) return round($bytes / 1048576, 2) . ' MB';
@@ -31,8 +32,229 @@ function delete_signal_by_remote_id(PDO $db, string $remote_id): void {
     $stmtDelInbox->execute([':rid' => $remote_id]);
 }
 
+
+function deaddrop_read_outbox_schema_version(array $feed): ?int {
+    if (!array_key_exists('schema_version', $feed)) {
+        return null;
+    }
+
+    $version = filter_var($feed['schema_version'], FILTER_VALIDATE_INT);
+    if ($version === false || $version < 2) {
+        return null;
+    }
+
+    return $version;
+}
+
+function deaddrop_normalize_remote_outbox(array $feed, string $fallback_url): ?array {
+    if (!isset($feed['posts']) || !is_array($feed['posts'])) {
+        return null;
+    }
+
+    $schema_version = deaddrop_read_outbox_schema_version($feed);
+    if ($schema_version === null) {
+        return null;
+    }
+
+    if (!isset($feed['node']) || !is_array($feed['node'])) {
+        return null;
+    }
+    $node = $feed['node'];
+
+    $capabilities = [];
+    if (isset($node['capabilities']) && is_array($node['capabilities'])) {
+        $capabilities = $node['capabilities'];
+    } elseif (isset($feed['capabilities']) && is_array($feed['capabilities'])) {
+        $capabilities = $feed['capabilities'];
+    }
+
+    $author = (string)($node['name'] ?? 'Unknown Node');
+    $domain = rtrim((string)($node['url'] ?? $fallback_url), '/');
+    if ($domain === '') {
+        $domain = rtrim($fallback_url, '/');
+    }
+
+    return [
+        'schema_version' => $schema_version,
+        'protocol_version' => (string)($feed['protocol_version'] ?? 'unknown'),
+        'author' => $author,
+        'domain' => $domain,
+        'public_key' => $node['public_key'] ?? null,
+        'pq_public' => $node['pq_public'] ?? null,
+        'signing_public_key' => $node['signing_public_key'] ?? null,
+        'capabilities' => $capabilities,
+        'posts' => $feed['posts']
+    ];
+}
+
+function deaddrop_capability_list(array $capabilities): string {
+    $enabled = [];
+    foreach ($capabilities as $name => $enabled_flag) {
+        if ($enabled_flag === true || $enabled_flag === 1 || $enabled_flag === '1') {
+            $enabled[] = (string)$name;
+        }
+    }
+    return empty($enabled) ? 'none advertised' : implode(',', $enabled);
+}
+
+function deaddrop_same_nullable_key(?string $a, ?string $b): bool {
+    $a = $a ?? '';
+    $b = $b ?? '';
+    return hash_equals($a, $b);
+}
+
+function deaddrop_apply_peer_key_pinning(PDO $db, string $onion_url, ?string $remote_pub_key, ?string $remote_pq_pub, ?string $remote_signing_pub, int $is_mutual): array {
+    if (empty($remote_pub_key) || empty($remote_signing_pub)) {
+        $stmt = $db->prepare("UPDATE following SET is_mutual = :mut WHERE onion_url = :url");
+        $stmt->execute([':mut' => $is_mutual, ':url' => $onion_url]);
+        return ['allowed' => true, 'status' => 'missing_key', 'message' => 'Encryption or signing public key missing.'];
+    }
+
+    $stmt_peer = $db->prepare("SELECT public_key, pq_public, signing_public_key, trust_status, pending_public_key, pending_signing_public_key FROM following WHERE onion_url = :url LIMIT 1");
+    $stmt_peer->execute([':url' => $onion_url]);
+    $peer = $stmt_peer->fetch(PDO::FETCH_ASSOC);
+
+    if (!$peer) {
+        return ['allowed' => true, 'status' => 'untracked', 'message' => 'Peer is not in following table.'];
+    }
+
+    $pinned_pub = $peer['public_key'] ?? null;
+    $pinned_pq = $peer['pq_public'] ?? null;
+    $pinned_signing = $peer['signing_public_key'] ?? null;
+
+    if (empty($pinned_pub) || empty($pinned_signing)) {
+        $stmt_pin = $db->prepare("
+            UPDATE following
+            SET public_key = :pub,
+                pq_public = :pq,
+                signing_public_key = :sign_pub,
+                pending_public_key = NULL,
+                pending_pq_public = NULL,
+                pending_signing_public_key = NULL,
+                key_changed_at = NULL,
+                trust_status = 'trusted',
+                trust_updated_at = CURRENT_TIMESTAMP,
+                is_mutual = :mut
+            WHERE onion_url = :url
+        ");
+        $stmt_pin->execute([
+            ':pub' => $remote_pub_key,
+            ':pq' => $remote_pq_pub,
+            ':sign_pub' => $remote_signing_pub,
+            ':mut' => $is_mutual,
+            ':url' => $onion_url,
+        ]);
+        return ['allowed' => true, 'status' => 'pinned', 'message' => 'First encryption and signing keys pinned.'];
+    }
+
+    if (
+        hash_equals((string)$pinned_pub, (string)$remote_pub_key)
+        && deaddrop_same_nullable_key($pinned_pq, $remote_pq_pub)
+        && hash_equals((string)$pinned_signing, (string)$remote_signing_pub)
+    ) {
+        $stmt_ok = $db->prepare("
+            UPDATE following
+            SET pending_public_key = NULL,
+                pending_pq_public = NULL,
+                pending_signing_public_key = NULL,
+                key_changed_at = NULL,
+                trust_status = 'trusted',
+                trust_updated_at = CURRENT_TIMESTAMP,
+                is_mutual = :mut
+            WHERE onion_url = :url
+        ");
+        $stmt_ok->execute([':mut' => $is_mutual, ':url' => $onion_url]);
+        return ['allowed' => true, 'status' => 'trusted', 'message' => 'Pinned key matched.'];
+    }
+
+    $stmt_changed = $db->prepare("
+        UPDATE following
+        SET pending_public_key = :pending_pub,
+            pending_pq_public = :pending_pq,
+            pending_signing_public_key = :pending_sign_pub,
+            key_changed_at = CURRENT_TIMESTAMP,
+            trust_status = 'key_changed',
+            is_mutual = :mut
+        WHERE onion_url = :url
+    ");
+    $stmt_changed->execute([
+        ':pending_pub' => $remote_pub_key,
+        ':pending_pq' => $remote_pq_pub,
+        ':pending_sign_pub' => $remote_signing_pub,
+        ':mut' => $is_mutual,
+        ':url' => $onion_url,
+    ]);
+
+    return ['allowed' => false, 'status' => 'key_changed', 'message' => 'Remote encryption or signing key changed; sync paused until Radar approval.'];
+}
+
+function deaddrop_post_signing_payload(array $post, string $node_url): string {
+    $payload = [
+        'node_url' => rtrim($node_url, '/'),
+        'id' => (string)($post['id'] ?? ''),
+        'content' => (string)($post['content'] ?? ''),
+        'media_url' => $post['media_url'] ?? null,
+        'reply_to' => $post['reply_to'] ?? null,
+        'status' => (string)($post['status'] ?? 'active'),
+        'expires_at' => $post['expires_at'] ?? null,
+        'timestamp' => (string)($post['timestamp'] ?? ''),
+        'schema_version' => (int)($post['schema_version'] ?? 2),
+    ];
+
+    return json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+}
+
+function deaddrop_verify_outbox_post_signature(array $post, string $node_url, ?string $signing_public_key): bool {
+    if (($post['signature_algorithm'] ?? '') !== 'ed25519') {
+        return false;
+    }
+
+    $signature = base64_decode((string)($post['post_signature'] ?? ''), true);
+    if ($signature === false || strlen($signature) !== SODIUM_CRYPTO_SIGN_BYTES) {
+        return false;
+    }
+
+    $public_key = base64_decode((string)$signing_public_key, true);
+    if ($public_key === false || strlen($public_key) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
+        return false;
+    }
+
+    try {
+        $payload = deaddrop_post_signing_payload($post, $node_url);
+    } catch (Throwable $e) {
+        return false;
+    }
+
+    return sodium_crypto_sign_verify_detached($signature, $payload, $public_key);
+}
+
+function deaddrop_peer_moderation_policy(PDO $db, string $onion_url): array {
+    $stmt = $db->prepare("SELECT moderation_status, remote_media_policy FROM following WHERE onion_url = :url LIMIT 1");
+    $stmt->execute([':url' => $onion_url]);
+    $peer = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$peer) {
+        return ['moderation_status' => 'active', 'remote_media_policy' => 'allow'];
+    }
+
+    $moderation_status = (string)($peer['moderation_status'] ?? 'active');
+    if (!in_array($moderation_status, ['active', 'quarantined', 'blocked'], true)) {
+        $moderation_status = 'active';
+    }
+
+    $remote_media_policy = (string)($peer['remote_media_policy'] ?? 'allow');
+    if (!in_array($remote_media_policy, ['allow', 'drop'], true)) {
+        $remote_media_policy = 'allow';
+    }
+
+    return [
+        'moderation_status' => $moderation_status,
+        'remote_media_policy' => $remote_media_policy,
+    ];
+}
+
 echo "============================================\n";
-echo "   DEADDROP WORKER INITIATED (STRICT V9 HYBRID)\n";
+echo "   DEADDROP WORKER INITIATED (V12 SIGNED SCHEMA V2+)\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
 echo "============================================\n\n";
 
@@ -64,10 +286,10 @@ try {
 
     // 📡 GATHER TARGET NODES
     $target_urls = [];
-    $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue");
+    $stmt_ping = $db->query("SELECT DISTINCT source_url FROM ping_queue WHERE status = 'trusted'");
     foreach ($stmt_ping->fetchAll(PDO::FETCH_ASSOC) as $p) $target_urls[] = $p['source_url'];
     
-    $stmt_follow = $db->query("SELECT onion_url FROM following");
+    $stmt_follow = $db->query("SELECT onion_url FROM following WHERE moderation_status = 'active'");
     foreach ($stmt_follow->fetchAll(PDO::FETCH_ASSOC) as $f) {
         if (!in_array($f['onion_url'], $target_urls)) $target_urls[] = $f['onion_url'];
     }
@@ -98,6 +320,12 @@ try {
         $onion_url = deaddrop_normalize_and_validate_peer_url((string)$peer_url_raw, $config, $policy_error);
         if ($onion_url === null) {
             echo "    [!] Skipping rejected peer endpoint: " . strip_tags((string)$peer_url_raw) . " // " . $policy_error . "\n";
+            continue;
+        }
+
+        $peer_policy = deaddrop_peer_moderation_policy($db, $onion_url);
+        if ($peer_policy['moderation_status'] !== 'active') {
+            echo "    [!] Skipping moderated peer: " . deaddrop_url_host($onion_url) . " is " . $peer_policy['moderation_status'] . ".\n";
             continue;
         }
 
@@ -178,43 +406,63 @@ try {
         }
 
         $feed = json_decode($json_response, true);
-        if (!$feed || !isset($feed['posts']) || !is_array($feed['posts'])) {
-            echo "    [!] Invalid outbox schema from: " . $host_domain . "\n";
+        if (!is_array($feed)) {
+            echo "    [!] Invalid JSON outbox from: " . $host_domain . "\n";
             continue;
         }
 
-        if (count($feed['posts']) > DEADDROP_WORKER_MAX_POSTS_PER_NODE) {
-            echo "    [!] Node capped: " . $host_domain . " advertised " . count($feed['posts']) . " posts; processing latest " . DEADDROP_WORKER_MAX_POSTS_PER_NODE . " only.\n";
-            $feed['posts'] = array_slice($feed['posts'], -DEADDROP_WORKER_MAX_POSTS_PER_NODE);
+        $normalized_feed = deaddrop_normalize_remote_outbox($feed, $onion_url);
+        if ($normalized_feed === null) {
+            echo "    [!] Skipping legacy or invalid outbox from: " . $host_domain . " (schema_version >= 2 and node metadata required).\n";
+            continue;
         }
 
-        echo "    [>] Syncing Node: " . $host_domain . " (" . format_bytes(strlen($json_response)) . ")\n";
+        $schema_version = (int)$normalized_feed['schema_version'];
+        if ($schema_version > DEADDROP_SUPPORTED_OUTBOX_SCHEMA) {
+            echo "    [!] Future outbox schema v" . $schema_version . " from " . $host_domain . "; attempting compatibility mode.\n";
+        }
+
+        if (count($normalized_feed['posts']) > DEADDROP_WORKER_MAX_POSTS_PER_NODE) {
+            echo "    [!] Node capped: " . $host_domain . " advertised " . count($normalized_feed['posts']) . " posts; processing latest " . DEADDROP_WORKER_MAX_POSTS_PER_NODE . " only.\n";
+            $normalized_feed['posts'] = array_slice($normalized_feed['posts'], -DEADDROP_WORKER_MAX_POSTS_PER_NODE);
+        }
+
+        echo "    [>] Syncing Node: " . $host_domain . " (schema v" . $schema_version . ", " . format_bytes(strlen($json_response)) . ")\n";
+        echo "        Capabilities: " . deaddrop_capability_list($normalized_feed['capabilities']) . "\n";
 
         $my_clean_url = rtrim($config['node_url'], '/');
         $is_mutual = (strpos($json_response, $my_clean_url) !== false) ? 1 : 0;
-        $remote_pub_key = $feed['public_key'] ?? null;
-        $remote_pq_pub = $feed['pq_public'] ?? null;
+        $remote_pub_key = $normalized_feed['public_key'] ?? null;
+        $remote_pq_pub = $normalized_feed['pq_public'] ?? null;
+        $remote_signing_pub = $normalized_feed['signing_public_key'] ?? null;
 
-        if ($remote_pub_key) {
-            $stmt_key = $db->prepare("UPDATE following SET public_key = :pub, pq_public = :pq, is_mutual = :mut WHERE onion_url = :url");
-            $stmt_key->execute([':pub' => $remote_pub_key, ':pq' => $remote_pq_pub, ':mut' => $is_mutual, ':url' => $onion_url]);
-        } else {
-            $stmt_key = $db->prepare("UPDATE following SET is_mutual = :mut WHERE onion_url = :url");
-            $stmt_key->execute([':mut' => $is_mutual, ':url' => $onion_url]);
+        $trust_result = deaddrop_apply_peer_key_pinning($db, $onion_url, $remote_pub_key, $remote_pq_pub, $remote_signing_pub, $is_mutual);
+        if (!empty($trust_result['message'])) {
+            echo "        Trust: " . $trust_result['message'] . "\n";
+        }
+        if (empty($trust_result['allowed'])) {
+            echo "    [!] KEY CHANGED: " . $host_domain . " sync paused. Approve or reject the pending key in Radar.\n";
+            continue;
         }
 
-        $author_name = $feed['author'] ?? 'Unknown Node';
-        $author_domain = rtrim($feed['domain'] ?? $onion_url, '/');
+        $author_name = $normalized_feed['author'] ?? 'Unknown Node';
+        $author_domain = rtrim($normalized_feed['domain'] ?? $onion_url, '/');
+        $peer_policy = deaddrop_peer_moderation_policy($db, $onion_url);
         $new_posts_count = 0;
 
         $check_timeline = $db->prepare("SELECT COUNT(*) FROM timeline WHERE remote_id = :rid");
         $check_inbox = $db->prepare("SELECT COUNT(*) FROM inbox WHERE remote_id = :rid");
 
-        $posts_reversed = array_reverse($feed['posts']);
+        $posts_reversed = array_reverse($normalized_feed['posts']);
 
         foreach ($posts_reversed as $post) {
             $remote_id = $post['id'] ?? null;
             if (!$remote_id) continue;
+
+            if (!deaddrop_verify_outbox_post_signature($post, $author_domain, $remote_signing_pub)) {
+                echo "        [!] Skipping unsigned or invalidly signed post: " . $remote_id . "\n";
+                continue;
+            }
 
             $remote_status = $post['status'] ?? 'active';
 
@@ -297,6 +545,8 @@ try {
                     // Private drops must not auto-load remote/public media URLs.
                     // Encrypted media support should carry a file key inside the encrypted payload instead.
                     $safe_media = null;
+                } elseif ($peer_policy['remote_media_policy'] === 'drop') {
+                    $safe_media = null;
                 } elseif ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) {
                     $safe_media = null;
                 }
@@ -330,7 +580,7 @@ try {
     curl_multi_close($multi_handle);
 
     // Garbage Collection & Trim
-    $db->exec("DELETE FROM ping_queue");
+    $db->exec("DELETE FROM ping_queue WHERE status = 'trusted'");
     $db->exec("DELETE FROM timeline WHERE is_local = 0 AND id NOT IN (SELECT id FROM timeline WHERE is_local = 0 ORDER BY created_at DESC LIMIT 2000)");
 
 } catch (Exception $e) {

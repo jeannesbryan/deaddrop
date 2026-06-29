@@ -38,38 +38,40 @@ function decrypt_alias($payload, $key_string) {
     return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
 }
 
+function deaddrop_key_fingerprint(?string $key): string {
+    $key = trim((string)$key);
+    if ($key === '') return 'none';
+    return substr(hash('sha256', $key), 0, 16);
+}
+
 // 🔐 BLACK SITE MASTER AUTHENTICATION
 $unlocked = deaddrop_is_unlocked();
 $unlock_error = '';
 $master_key = deaddrop_master_key();
 
 if (isset($_POST['unlock_pass'])) {
-    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
+    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error, deaddrop_session_ttl($config))) {
         $unlocked = true;
         $master_key = deaddrop_master_key();
     }
 }
-if (isset($_POST['admin_pass']) && password_verify($_POST['admin_pass'], $config['admin_hash'])) {
-    deaddrop_unlock($_POST['admin_pass'], $config['admin_hash'], $unlock_error);
-    $unlocked = true; // Valid action execution naturally unlocks the current view
-    $master_key = deaddrop_master_key();
-}
 
 if ($unlocked) {
-    deaddrop_refresh_unlock();
+    deaddrop_refresh_unlock(deaddrop_session_ttl($config));
 }
 
 // ==========================================
 // ⚙️ HANDLERS: FOLLOW, UNFOLLOW, PING (Strictly Protected)
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
-    $input_pass = $_POST['admin_pass'] ?? '';
-    
-    if (!password_verify($input_pass, $config['admin_hash'])) {
-        sleep(2);
-        $status_msg = "[!] ACCESS DENIED: Invalid Secure Key.";
+    $auth_error = null;
+
+    if (!deaddrop_action_allowed($auth_error)) {
+        sleep(1);
+        $status_msg = $auth_error ?? "[!] ACCESS DENIED: Session expired.";
         $status_class = "danger";
     } else {
+        deaddrop_refresh_unlock(deaddrop_session_ttl($config));
         $action = $_POST['action'];
         $target_url_raw = trim($_POST['target_url'] ?? '');
         $policy_error = null;
@@ -82,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $host_domain = deaddrop_url_host($clean_target_url);
             if ($action === 'follow') {
                 $enc_alias = encrypt_alias($host_domain, $master_key); // Auto-encrypt default alias
-                $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias) VALUES (:url, :alias)");
+                $stmt = $db->prepare("INSERT OR IGNORE INTO following (onion_url, alias, trust_status, moderation_status, remote_media_policy) VALUES (:url, :alias, 'unverified', 'active', 'allow')");
                 $stmt->execute([':url' => $clean_target_url, ':alias' => $enc_alias]);
                 $status_msg = "[+] SYNCHRONIZATION ACTIVE: Node appended to your radar.";
                 $status_class = "success";
@@ -148,6 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 $feeds = [];
 $profile_name = "Classified Entity";
 $is_following = false;
+$followed_peer = null;
 $allow_view = false;
 
 if ($is_local_profile) {
@@ -171,13 +174,13 @@ if ($is_local_profile) {
             
             if (!empty($feeds)) $profile_name = $feeds[0]['author_name'];
             
-            $stmt_cek = $db->prepare("SELECT alias FROM following WHERE onion_url = :host OR onion_url = :clean_host LIMIT 1");
+            $stmt_cek = $db->prepare("SELECT * FROM following WHERE onion_url = :host OR onion_url = :clean_host LIMIT 1");
             $stmt_cek->execute([':host' => $target_host, ':clean_host' => $clean_target]);
-            $saved_alias = $stmt_cek->fetchColumn();
+            $followed_peer = $stmt_cek->fetch(PDO::FETCH_ASSOC);
             
-            if ($saved_alias) {
+            if ($followed_peer) {
                 $is_following = true;
-                $decrypted_name = decrypt_alias($saved_alias, $master_key);
+                $decrypted_name = decrypt_alias($followed_peer['alias'], $master_key);
                 $profile_name = '@' . $decrypted_name;
                 
                 // Override foreign author names with your local decrypted petname
@@ -211,6 +214,7 @@ if ($is_local_profile) {
             <h1 class="m-0 font-bold t-glow t-page-title">&gt; <?= htmlspecialchars($profile_name) ?>_</h1>
             <div class="mt-1 fs-small font-bold text-muted">
                 NODE: <?= htmlspecialchars($clean_target) ?>
+                <?php if ($unlocked): ?><br>UNLOCK TTL: <?= deaddrop_unlocked_remaining() ?>s<?php endif; ?>
                 <?= $is_local_profile ? '<span class="t-badge success ghost ml-2">[ Sovereign Host ]</span>' : '' ?>
             </div>
         </div>
@@ -240,25 +244,51 @@ if ($is_local_profile) {
         <?php if (!$is_local_profile && $unlocked): ?>
             <div class="t-card dashed mb-4 p-3">
                 <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 m-0 flex-wrap">
+                    <?= deaddrop_csrf_input() ?>
                     <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
                     <?php if ($is_following): ?>
                         <input type="hidden" name="action" value="unfollow">
                         <span class="text-success fs-small flex-fill font-bold t-glow">[✓] This node is synchronized to your radar.</span>
-                        <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
                         <button type="submit" class="t-btn danger m-0">[ DISCONNECT ]</button>
                     <?php else: ?>
                         <input type="hidden" name="action" value="follow">
                         <span class="text-muted fs-small flex-fill">Add this node to your radar to periodically pull its data.</span>
-                        <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
                         <button type="submit" class="t-btn warning m-0">[ SYNC NODE ]</button>
                     <?php endif; ?>
                 </form>
+
+                <?php if (($followed_peer['trust_status'] ?? '') === 'key_changed'): ?>
+                    <div class="t-alert danger mt-3 mb-0">
+                        [ KEY CHANGED ] This peer advertised a different public key. Worker sync is paused until you approve or reject it in Radar.
+                        <br>Pinned encryption: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['public_key'] ?? null)) ?>
+                        // Pending encryption: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['pending_public_key'] ?? null)) ?>
+                        <br>Pinned signing: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['signing_public_key'] ?? null)) ?>
+                        // Pending signing: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['pending_signing_public_key'] ?? null)) ?>
+                    </div>
+                <?php elseif ($is_following && !empty($followed_peer['public_key'])): ?>
+                    <div class="text-muted fs-small mt-3">
+                        Pinned encryption key fingerprint: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['public_key'])) ?>
+                        <br>Pinned signing key fingerprint: <?= htmlspecialchars(deaddrop_key_fingerprint($followed_peer['signing_public_key'] ?? null)) ?>
+                    </div>
+                <?php elseif ($is_following): ?>
+                    <div class="text-warning fs-small mt-3">[ KEY UNVERIFIED ] First worker sync will pin this peer key.</div>
+                <?php endif; ?>
+
+                <?php if ($is_following && (($followed_peer['moderation_status'] ?? 'active') !== 'active')): ?>
+                    <div class="t-alert warning mt-3 mb-0">
+                        [ <?= strtoupper(htmlspecialchars($followed_peer['moderation_status'] ?? 'unknown')) ?> ] Worker sync is disabled for this peer until policy is changed in Radar.
+                    </div>
+                <?php endif; ?>
+
+                <?php if ($is_following && (($followed_peer['remote_media_policy'] ?? 'allow') === 'drop')): ?>
+                    <div class="text-warning fs-small mt-3">[ MEDIA DROP ] Remote media URLs from this peer are discarded during worker sync.</div>
+                <?php endif; ?>
                 
                 <form action="profile.php?host=<?= urlencode($target_host) ?>" method="POST" class="d-flex align-items-center gap-2 mt-3 pt-3 flex-wrap t-border-top border-soft">
+                    <?= deaddrop_csrf_input() ?>
                     <input type="hidden" name="target_url" value="<?= htmlspecialchars($clean_target) ?>">
                     <input type="hidden" name="action" value="ping_node">
                     <span class="text-muted fs-small flex-fill">Manually knock on their door (Solves PoW puzzle before sending).</span>
-                    <input type="password" name="admin_pass" class="t-input w-auto m-0" placeholder="Secure Key" required>
                     <button type="submit" class="t-btn outline m-0" >[ KNOCK / PING ]</button>
                 </form>
             </div>

@@ -30,7 +30,7 @@ $unlock_error = '';
 $master_key = deaddrop_master_key();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
-    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
+    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error, deaddrop_session_ttl($config))) {
         $unlocked = true;
         $master_key = deaddrop_master_key();
         $status_msg = "[+] BLACK SITE UNLOCKED: GLOBAL TIMELINE EXTRAPOLATED";
@@ -38,7 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
 }
 
 if ($unlocked) {
-    deaddrop_refresh_unlock();
+    deaddrop_refresh_unlock(deaddrop_session_ttl($config));
 }
 
 // ==========================================
@@ -140,6 +140,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                 <h1 class="m-0 font-bold t-glow t-page-title">&gt; <?= htmlspecialchars($config['node_name']) ?>_</h1>
                 <div class="mt-1 fs-small font-bold text-muted">
                     NODE: <?= htmlspecialchars($config['node_url']) ?>
+                    <br>UNLOCK TTL: <?= deaddrop_unlocked_remaining() ?>s
                 </div>
             </div>
             <a href="index.php?lock=1" class="t-btn danger outline">[ LOCK ]</a>
@@ -158,6 +159,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
         <div class="t-card mb-4">
             <div class="t-card-title">[ Broadcast Station ]</div>
             <form action="publish.php" method="POST" enctype="multipart/form-data">
+                <?= deaddrop_csrf_input() ?>
                 <textarea name="content" class="t-textarea mb-2" placeholder="Type your public speculations or thought logs here..." required></textarea>
                 
                 <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
@@ -174,8 +176,8 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                     <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0 t-input-sm">
                 </div>
 
-                <div class="d-flex gap-2">
-                    <input type="password" name="admin_pass" class="t-input flex-fill m-0" placeholder="Secure Key" required>
+                <div class="d-flex gap-2 align-items-center t-stack-mobile">
+                    <span class="t-badge ghost">[ SESSION AUTH ACTIVE ]</span>
                     <button type="submit" class="t-btn m-0">TRANSMIT</button>
                 </div>
             </form>
@@ -203,8 +205,8 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                                 <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
                                 <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
                                     <form action="delete.php" method="POST" class="m-0 p-0 t-inline-form" onsubmit="return confirm('Initiate Global Tombstone Protocol? This will destroy the signal across all synced nodes.');">
+                                        <?= deaddrop_csrf_input() ?>
                                         <input type="hidden" name="remote_id" value="<?= htmlspecialchars($post['remote_id']) ?>">
-                                        <input type="password" name="admin_pass" placeholder="Key" class="t-input m-0 t-input-xs" required>
                                         <button type="submit" class="t-badge outline danger m-0 t-delete-mini">[ DEL ]</button>
                                     </form>
                                 <?php endif; ?>

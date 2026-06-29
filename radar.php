@@ -37,11 +37,25 @@ function decrypt_alias($payload, $key_string) {
     return $dec !== false ? $dec : "[DECRYPTION_FAILED]";
 }
 
+function deaddrop_key_fingerprint(?string $key): string {
+    $key = trim((string)$key);
+    if ($key === '') return 'none';
+    return substr(hash('sha256', $key), 0, 16);
+}
+
+function deaddrop_default_alias_from_url(string $url, string $prefix = 'node'): string {
+    $host = deaddrop_url_host($url);
+    if ($host !== '') {
+        return $prefix . '_' . substr(hash('sha256', $host), 0, 8);
+    }
+    return $prefix . '_' . substr(hash('sha256', $url), 0, 8);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // 1. VOID UNLOCK ATTEMPT
     if (isset($_POST['unlock_pass'])) {
-        if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
+        if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error, deaddrop_session_ttl($config))) {
             $unlocked = true;
             $master_key = deaddrop_master_key();
             $status_msg = "[+] BLACK SITE UNLOCKED: COMMAND CENTER ONLINE";
@@ -49,15 +63,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
     
-    // 2. RADAR ACTIONS (Inherently unlocks if pass is correct)
+    // 2. RADAR ACTIONS (v11.1: active unlock session + CSRF token)
     if (isset($_POST['action'])) {
-        $input_pass = $_POST['admin_pass'] ?? '';
-        if (!password_verify($input_pass, $config['admin_hash'])) {
+        $auth_error = null;
+        if (!deaddrop_action_allowed($auth_error)) {
             sleep(1);
-            $unlock_error = "[!] ACCESS DENIED: Invalid Secure Key.";
+            $unlock_error = $auth_error ?? "[!] ACCESS DENIED: Session expired.";
         } else {
-            deaddrop_unlock($input_pass, $config['admin_hash'], $unlock_error);
-            $unlocked = true; 
+            deaddrop_refresh_unlock(deaddrop_session_ttl($config));
+            $unlocked = true;
             $master_key = deaddrop_master_key();
 
             // INTERCEPT PEER LOCK (ADD PEER)
@@ -83,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $alert_type = 'danger';
                     } else {
                         $enc_alias = encrypt_alias($alias, $master_key);
-                        $stmt = $db->prepare("INSERT INTO following (onion_url, alias) VALUES (:url, :alias)");
+                        $stmt = $db->prepare("INSERT INTO following (onion_url, alias, trust_status, moderation_status, remote_media_policy) VALUES (:url, :alias, 'unverified', 'active', 'allow')");
                         $stmt->execute([':url' => $peer_url, ':alias' => $enc_alias]);
                         $db->prepare("DELETE FROM ping_queue WHERE source_url = :url")->execute([':url' => $peer_url]);
                         
@@ -100,6 +114,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([':url' => $peer_url]);
                 $status_msg = "[-] SYNCHRONIZATION DISCONNECTED: Node removed from radar.";
                 $alert_type = 'warning';
+            }
+
+            // INTERCEPT MODERATION STATE
+            elseif ($_POST['action'] === 'activate_peer' || $_POST['action'] === 'quarantine_peer' || $_POST['action'] === 'block_peer') {
+                $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+                $new_status = [
+                    'activate_peer' => 'active',
+                    'quarantine_peer' => 'quarantined',
+                    'block_peer' => 'blocked',
+                ][$_POST['action']];
+
+                $stmt = $db->prepare("
+                    UPDATE following
+                    SET moderation_status = :status,
+                        moderation_updated_at = CURRENT_TIMESTAMP
+                    WHERE onion_url = :url
+                ");
+                $stmt->execute([':status' => $new_status, ':url' => $peer_url]);
+
+                if ($new_status === 'blocked') {
+                    $db->prepare("DELETE FROM ping_queue WHERE source_url = :url")->execute([':url' => $peer_url]);
+                } elseif ($new_status === 'active') {
+                    $db->prepare("UPDATE ping_queue SET status = 'trusted', reviewed_at = CURRENT_TIMESTAMP WHERE source_url = :url")->execute([':url' => $peer_url]);
+                } else {
+                    $db->prepare("UPDATE ping_queue SET status = 'quarantined', reviewed_at = CURRENT_TIMESTAMP WHERE source_url = :url")->execute([':url' => $peer_url]);
+                }
+
+                $status_msg = "[+] PEER POLICY UPDATED: " . htmlspecialchars($new_status);
+                $alert_type = ($new_status === 'blocked') ? 'danger' : (($new_status === 'quarantined') ? 'warning' : 'success');
+            }
+
+            // INTERCEPT REMOTE MEDIA POLICY
+            elseif ($_POST['action'] === 'allow_remote_media' || $_POST['action'] === 'drop_remote_media') {
+                $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+                $media_policy = ($_POST['action'] === 'drop_remote_media') ? 'drop' : 'allow';
+                $stmt = $db->prepare("
+                    UPDATE following
+                    SET remote_media_policy = :policy,
+                        moderation_updated_at = CURRENT_TIMESTAMP
+                    WHERE onion_url = :url
+                ");
+                $stmt->execute([':policy' => $media_policy, ':url' => $peer_url]);
+
+                $status_msg = "[+] REMOTE MEDIA POLICY UPDATED: " . htmlspecialchars($media_policy);
+                $alert_type = ($media_policy === 'drop') ? 'warning' : 'success';
             }
 
             // INTERCEPT ALIAS MUTATION
@@ -119,6 +178,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     $status_msg = "[+] ALIAS UPDATED: Node successfully renamed to @" . htmlspecialchars($alias);
                     $alert_type = 'success';
+                }
+            }
+
+            // INTERCEPT KEY PIN APPROVAL
+            elseif ($_POST['action'] === 'approve_peer_key') {
+                $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+                $stmt = $db->prepare("
+                    UPDATE following
+                    SET public_key = COALESCE(pending_public_key, public_key),
+                        pq_public = pending_pq_public,
+                        signing_public_key = COALESCE(pending_signing_public_key, signing_public_key),
+                        pending_public_key = NULL,
+                        pending_pq_public = NULL,
+                        pending_signing_public_key = NULL,
+                        key_changed_at = NULL,
+                        trust_status = 'trusted',
+                        trust_updated_at = CURRENT_TIMESTAMP
+                    WHERE onion_url = :url
+                      AND trust_status = 'key_changed'
+                      AND pending_public_key IS NOT NULL
+                ");
+                $stmt->execute([':url' => $peer_url]);
+
+                if ($stmt->rowCount() > 0) {
+                    $status_msg = "[+] KEY APPROVED: Pending peer key is now pinned.";
+                    $alert_type = 'success';
+                } else {
+                    $status_msg = "[!] KEY APPROVAL SKIPPED: No pending key found for this peer.";
+                    $alert_type = 'warning';
+                }
+            }
+
+            // INTERCEPT KEY PIN REJECTION
+            elseif ($_POST['action'] === 'reject_peer_key') {
+                $peer_url = rtrim(trim($_POST['peer_url'] ?? ''), '/');
+                $stmt = $db->prepare("
+                    UPDATE following
+                    SET pending_public_key = NULL,
+                        pending_pq_public = NULL,
+                        pending_signing_public_key = NULL,
+                        key_changed_at = NULL,
+                        trust_status = CASE WHEN public_key IS NULL OR public_key = '' OR signing_public_key IS NULL OR signing_public_key = '' THEN 'unverified' ELSE 'trusted' END,
+                        trust_updated_at = CURRENT_TIMESTAMP
+                    WHERE onion_url = :url
+                      AND trust_status = 'key_changed'
+                ");
+                $stmt->execute([':url' => $peer_url]);
+
+                if ($stmt->rowCount() > 0) {
+                    $status_msg = "[+] KEY REJECTED: Existing pinned key was kept.";
+                    $alert_type = 'warning';
+                } else {
+                    $status_msg = "[!] KEY REJECTION SKIPPED: No pending key found for this peer.";
+                    $alert_type = 'warning';
+                }
+            }
+
+            // INTERCEPT PENDING PING MODERATION
+            elseif ($_POST['action'] === 'quarantine_ping' || $_POST['action'] === 'block_ping' || $_POST['action'] === 'dismiss_ping') {
+                $peer_url_raw = trim($_POST['peer_url'] ?? '');
+                $policy_error = null;
+                $peer_url = deaddrop_normalize_and_validate_peer_url($peer_url_raw, $config, $policy_error);
+
+                if ($peer_url === null) {
+                    $status_msg = "[!] PING POLICY REJECTED: " . $policy_error;
+                    $alert_type = 'danger';
+                } elseif ($_POST['action'] === 'dismiss_ping') {
+                    $db->prepare("DELETE FROM ping_queue WHERE source_url = :url")->execute([':url' => $peer_url]);
+                    $status_msg = "[-] PING DISMISSED.";
+                    $alert_type = 'warning';
+                } else {
+                    $new_status = ($_POST['action'] === 'block_ping') ? 'blocked' : 'quarantined';
+                    $alias = deaddrop_default_alias_from_url($peer_url, $new_status === 'blocked' ? 'blocked' : 'quarantine');
+                    $enc_alias = encrypt_alias($alias, $master_key);
+
+                    $stmt = $db->prepare("
+                        INSERT INTO following (onion_url, alias, trust_status, moderation_status, remote_media_policy, moderation_updated_at)
+                        VALUES (:url, :alias, 'unverified', :status, 'drop', CURRENT_TIMESTAMP)
+                        ON CONFLICT(onion_url) DO UPDATE SET
+                            moderation_status = excluded.moderation_status,
+                            remote_media_policy = excluded.remote_media_policy,
+                            moderation_updated_at = CURRENT_TIMESTAMP
+                    ");
+                    $stmt->execute([':url' => $peer_url, ':alias' => $enc_alias, ':status' => $new_status]);
+
+                    if ($new_status === 'blocked') {
+                        $db->prepare("DELETE FROM ping_queue WHERE source_url = :url")->execute([':url' => $peer_url]);
+                    } else {
+                        $db->prepare("UPDATE ping_queue SET status = 'quarantined', is_known = 1, reviewed_at = CURRENT_TIMESTAMP WHERE source_url = :url")->execute([':url' => $peer_url]);
+                    }
+
+                    $status_msg = "[+] PING REVIEWED: peer marked " . htmlspecialchars($new_status) . ".";
+                    $alert_type = ($new_status === 'blocked') ? 'danger' : 'warning';
                 }
             }
 
@@ -187,7 +339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 if ($unlocked) {
-    deaddrop_refresh_unlock();
+    deaddrop_refresh_unlock(deaddrop_session_ttl($config));
 }
 
 // 🛡️ ZERO-LEAK QUERY: Data is only fetched if vault is unlocked!
@@ -249,6 +401,7 @@ if ($unlocked) {
                 <h1 class="m-0 font-bold t-glow t-page-title info">&gt; RADAR_COMMAND_</h1>
                 <div class="mt-1 fs-small font-bold text-muted">
                     NODE: <?= htmlspecialchars($config['node_url']) ?>
+                    <br>UNLOCK TTL: <?= deaddrop_unlocked_remaining() ?>s
                 </div>
             </div>
             <a href="radar.php?lock=1" class="t-btn danger outline">[ LOCK ]</a>
@@ -269,13 +422,13 @@ if ($unlocked) {
                 <span>[ Target Lock // Manual Entry ]</span>
             </div>
             <form action="radar.php" method="POST">
+                <?= deaddrop_csrf_input() ?>
                 <input type="hidden" name="action" value="add_peer">
                 <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
                     <input type="text" name="peer_url" class="t-input flex-fill m-0 t-input-peer-url border-info" placeholder="Endpoint URL (http://peer.onion/deaddrop)" required>
                     <input type="text" name="peer_alias" class="t-input w-auto m-0 t-input-alias border-info" placeholder="Petname (@target)" required>
                 </div>
                 <div class="d-flex gap-2">
-                    <input type="password" name="admin_pass" class="t-input flex-fill m-0 border-info" placeholder="Secure Key" required>
                     <button type="submit" class="t-btn info m-0 outline">[ LOCK RADAR ]</button>
                 </div>
             </form>
@@ -295,25 +448,69 @@ if ($unlocked) {
                                 <?php if (isset($peer['is_mutual']) && $peer['is_mutual'] == 1): ?>
                                     <span class="t-badge success ghost">[🤝 Mutual]</span>
                                 <?php endif; ?>
+                                <?php if (($peer['trust_status'] ?? '') === 'key_changed'): ?>
+                                    <span class="t-badge danger ghost">[ KEY CHANGED ]</span>
+                                <?php elseif (!empty($peer['public_key'])): ?>
+                                    <span class="t-badge success ghost">[ KEY PINNED ]</span>
+                                <?php else: ?>
+                                    <span class="t-badge warning ghost">[ KEY UNVERIFIED ]</span>
+                                <?php endif; ?>
+                                <?php if (($peer['moderation_status'] ?? 'active') === 'blocked'): ?>
+                                    <span class="t-badge danger ghost">[ BLOCKED ]</span>
+                                <?php elseif (($peer['moderation_status'] ?? 'active') === 'quarantined'): ?>
+                                    <span class="t-badge warning ghost">[ QUARANTINED ]</span>
+                                <?php else: ?>
+                                    <span class="t-badge success ghost">[ ACTIVE ]</span>
+                                <?php endif; ?>
+                                <?php if (($peer['remote_media_policy'] ?? 'allow') === 'drop'): ?>
+                                    <span class="t-badge warning ghost">[ MEDIA DROP ]</span>
+                                <?php endif; ?>
                                 <br><span class="fs-small text-muted"><?= htmlspecialchars($peer['onion_url']) ?></span>
+                                <br><span class="fs-small text-muted">Pinned encryption key: <?= htmlspecialchars(deaddrop_key_fingerprint($peer['public_key'] ?? null)) ?></span>
+                                <br><span class="fs-small text-muted">Pinned signing key: <?= htmlspecialchars(deaddrop_key_fingerprint($peer['signing_public_key'] ?? null)) ?></span>
+                                <?php if (($peer['trust_status'] ?? '') === 'key_changed'): ?>
+                                    <br><span class="fs-small text-danger">Pending encryption key: <?= htmlspecialchars(deaddrop_key_fingerprint($peer['pending_public_key'] ?? null)) ?></span>
+                                    <br><span class="fs-small text-danger">Pending signing key: <?= htmlspecialchars(deaddrop_key_fingerprint($peer['pending_signing_public_key'] ?? null)) ?> // Changed: <?= htmlspecialchars($peer['key_changed_at'] ?? 'unknown') ?> UTC</span>
+                                <?php endif; ?>
                             </div>
                             
                             <form action="radar.php" method="POST" class="m-0 d-flex gap-1 align-items-center flex-wrap">
+                                <?= deaddrop_csrf_input() ?>
                                 <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
-                                <input type="password" name="admin_pass" class="t-input m-0 t-input-micro" placeholder="Key" required>
                                 
                                 <button type="submit" name="action" value="ping_peer" class="t-badge outline info m-0 font-bold t-badge-btn">[ KNOCK ]</button>
                                 
                                 <button type="submit" name="action" value="unfollow_peer" class="t-badge outline danger m-0 t-badge-btn">[ DEL ]</button>
                             </form>
                         </div>
+
+                        <?php if (($peer['trust_status'] ?? '') === 'key_changed'): ?>
+                            <form action="radar.php" method="POST" class="m-0 d-flex gap-2 align-items-center mt-2 flex-wrap">
+                                <?= deaddrop_csrf_input() ?>
+                                <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
+                                <span class="text-danger fs-small font-bold">Remote key changed. Sync is paused until you approve or reject it.</span>
+                                <button type="submit" name="action" value="approve_peer_key" class="t-badge outline success m-0 t-badge-btn">[ APPROVE KEY ]</button>
+                                <button type="submit" name="action" value="reject_peer_key" class="t-badge outline danger m-0 t-badge-btn">[ REJECT KEY ]</button>
+                            </form>
+                        <?php endif; ?>
+
+                        <form action="radar.php" method="POST" class="m-0 d-flex gap-2 align-items-center mt-2 flex-wrap">
+                            <?= deaddrop_csrf_input() ?>
+                            <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
+                            <span class="text-muted fs-small">↳ Policy:</span>
+                            <button type="submit" name="action" value="activate_peer" class="t-badge outline success m-0 t-badge-btn">[ ACTIVE ]</button>
+                            <button type="submit" name="action" value="quarantine_peer" class="t-badge outline warning m-0 t-badge-btn">[ QUARANTINE ]</button>
+                            <button type="submit" name="action" value="block_peer" class="t-badge outline danger m-0 t-badge-btn">[ BLOCK ]</button>
+                            <button type="submit" name="action" value="allow_remote_media" class="t-badge outline info m-0 t-badge-btn">[ ALLOW MEDIA ]</button>
+                            <button type="submit" name="action" value="drop_remote_media" class="t-badge outline warning m-0 t-badge-btn">[ DROP MEDIA ]</button>
+                        </form>
                         
                         <form action="radar.php" method="POST" class="m-0 d-flex gap-2 align-items-center mt-2">
+                            <?= deaddrop_csrf_input() ?>
                             <input type="hidden" name="action" value="edit_alias">
                             <input type="hidden" name="peer_url" value="<?= htmlspecialchars($peer['onion_url']) ?>">
                             <span class="text-muted fs-small">↳ Rename:</span>
                             <input type="text" name="new_alias" class="t-input m-0 t-input-alias-sm" placeholder="New @alias" required>
-                            <input type="password" name="admin_pass" class="t-input m-0 t-input-micro" placeholder="Key" required>
                             <button type="submit" class="t-badge outline warning m-0 t-badge-btn">[ EDIT ]</button>
                         </form>
                     </div>
@@ -332,14 +529,21 @@ if ($unlocked) {
                     <div class="t-dotted-row">
                         <div class="text-muted fs-small mb-1">Incoming Signal From:</div>
                         <div class="t-glow text-warning font-bold t-fingerprint"><?= htmlspecialchars($ping['source_url']) ?></div>
-                        <div class="text-muted fs-small mb-2">Time: <?= htmlspecialchars($ping['received_at']) ?> UTC</div>
+                        <div class="text-muted fs-small mb-2">
+                            Time: <?= htmlspecialchars($ping['received_at']) ?> UTC
+                            // Status: <?= htmlspecialchars($ping['status'] ?? 'pending') ?>
+                            // Known: <?= !empty($ping['is_known']) ? 'yes' : 'no' ?>
+                        </div>
                         
-                        <form action="radar.php" method="POST" class="m-0 d-flex gap-2 align-items-center">
+                        <form action="radar.php" method="POST" class="m-0 d-flex gap-2 align-items-center flex-wrap">
+                            <?= deaddrop_csrf_input() ?>
                             <input type="hidden" name="action" value="add_peer">
                             <input type="hidden" name="peer_url" value="<?= htmlspecialchars($ping['source_url']) ?>">
-                            <input type="text" name="peer_alias" class="t-input m-0 t-input-alias-sm" placeholder="Set @alias" required>
-                            <input type="password" name="admin_pass" class="t-input m-0 t-input-micro wide" placeholder="Key" required>
+                            <input type="text" name="peer_alias" class="t-input m-0 t-input-alias-sm" placeholder="Set @alias">
                             <button type="submit" class="t-badge outline success m-0 t-badge-btn">[ + LOCK TO RADAR ]</button>
+                            <button type="submit" name="action" value="quarantine_ping" class="t-badge outline warning m-0 t-badge-btn">[ QUARANTINE ]</button>
+                            <button type="submit" name="action" value="block_ping" class="t-badge outline danger m-0 t-badge-btn">[ BLOCK ]</button>
+                            <button type="submit" name="action" value="dismiss_ping" class="t-badge outline m-0 t-badge-btn">[ DISMISS ]</button>
                         </form>
                     </div>
                 <?php endforeach; ?>

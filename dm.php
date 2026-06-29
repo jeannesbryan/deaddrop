@@ -35,7 +35,7 @@ $my_pq_keypair = null;
 $master_key = deaddrop_master_key();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
-    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error)) {
+    if (deaddrop_unlock($_POST['unlock_pass'], $config['admin_hash'], $unlock_error, deaddrop_session_ttl($config))) {
         $unlocked = true;
         $master_key = deaddrop_master_key();
         $status_msg = "VAULT UNLOCKED IN RAM // VOLATILE EXTRAPOLATION ACTIVE";
@@ -43,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unlock_pass'])) {
 }
 
 if ($unlocked) {
-    deaddrop_refresh_unlock();
+    deaddrop_refresh_unlock(deaddrop_session_ttl($config));
     $my_keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey(
         base64_decode($config['private_key']), base64_decode($config['public_key'])
     );
@@ -163,6 +163,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                 <h1 class="m-0 font-bold t-glow t-page-title private">&gt; ISOLATED_INBOX_</h1>
                 <div class="mt-1 fs-small font-bold text-muted">
                     NODE: <?= htmlspecialchars($config['node_url']) ?>
+                    <br>UNLOCK TTL: <?= deaddrop_unlocked_remaining() ?>s
                 </div>
             </div>
             <a href="dm.php?lock=1" class="t-btn danger outline">[ PURGE RAM & LOCK ]</a>
@@ -181,6 +182,7 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
         <div class="t-card private mb-5">
             <div class="t-card-title private">[ Secure Drop Channel ]</div>
             <form action="publish.php" method="POST" enctype="multipart/form-data">
+                <?= deaddrop_csrf_input() ?>
                 <textarea name="content" class="t-textarea mb-2 border-private" placeholder="Type your encrypted payload here..." required></textarea>
                 
                 <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
@@ -201,8 +203,8 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                     <input type="file" name="media" accept="image/jpeg, image/png, image/webp, image/gif" class="t-input w-auto m-0 t-input-sm border-private">
                 </div>
 
-                <div class="d-flex gap-2">
-                    <input type="password" name="admin_pass" class="t-input flex-fill m-0 border-private" placeholder="Secure Key" required>
+                <div class="d-flex gap-2 align-items-center t-stack-mobile">
+                    <span class="t-badge private ghost">[ SESSION AUTH ACTIVE ]</span>
                     <button type="submit" class="t-btn private active m-0">ENCRYPT & TRANSMIT</button>
                 </div>
             </form>
@@ -230,8 +232,8 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                                 <span>ID: <?= htmlspecialchars($post['remote_id']) ?></span>
                                 <?php if ($post['is_local'] && $post['status'] !== 'deleted'): ?>
                                     <form action="delete.php" method="POST" class="m-0 p-0 t-inline-form" onsubmit="return confirm('Initiate Global Tombstone Protocol?');">
+                                        <?= deaddrop_csrf_input() ?>
                                         <input type="hidden" name="remote_id" value="<?= htmlspecialchars($post['remote_id']) ?>">
-                                        <input type="password" name="admin_pass" placeholder="Key" class="t-input m-0 t-input-xs border-private" required>
                                         <button type="submit" class="t-badge outline danger m-0 t-delete-mini">[ DEL ]</button>
                                     </form>
                                 <?php endif; ?>

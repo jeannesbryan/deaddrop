@@ -11,6 +11,13 @@ $default_config = [
     'admin_hash'  => 'YOUR_ADMIN_PASSWORD_HASH',
     'max_outbox'  => 50,
 
+    // v11: public outbox schema metadata.
+    // DeadDrop v11+ emits schema v2 and skips schema-less legacy feeds.
+    'outbox_schema_version' => 2,
+
+    // v11.1: short-lived server-side admin unlock session (10-15 minutes).
+    'session_ttl_seconds' => 900,
+
     // Sensitive SQLite storage outside webroot
     'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
 
@@ -18,6 +25,11 @@ $default_config = [
     'backup_path' => '/var/backups/deaddrop',
     'backup_retention' => 7,
     'backup_include_config' => true,
+
+    // v11.4: encrypted backup export.
+    // Put only the public age recipient here; keep the identity/private key offline.
+    'backup_encryption' => true,
+    'backup_age_recipient' => 'age1REPLACE_WITH_YOUR_PUBLIC_RECIPIENT',
 
     // 🛡️ NETWORK POLICY
     // Production default: reject localhost/127.0.0.1 peers. Set true only in local lab/dev.
@@ -98,26 +110,98 @@ try {
         alias TEXT,
         public_key TEXT DEFAULT NULL,
         pq_public TEXT DEFAULT NULL,
+        trust_status TEXT DEFAULT 'unverified',
+        signing_public_key TEXT DEFAULT NULL,
+        pending_public_key TEXT DEFAULT NULL,
+        pending_pq_public TEXT DEFAULT NULL,
+        pending_signing_public_key TEXT DEFAULT NULL,
+        key_changed_at DATETIME DEFAULT NULL,
+        trust_updated_at DATETIME DEFAULT NULL,
+        moderation_status TEXT DEFAULT 'active',
+        remote_media_policy TEXT DEFAULT 'allow',
+        moderation_updated_at DATETIME DEFAULT NULL,
         is_mutual INTEGER DEFAULT 0,
         last_pulled DATETIME
     )");
 
+    $following_columns = [];
+    foreach ($db->query("PRAGMA table_info(following)")->fetchAll(PDO::FETCH_ASSOC) as $column) {
+        $following_columns[$column['name']] = true;
+    }
+
+    $following_migrations = [
+        'trust_status' => "ALTER TABLE following ADD COLUMN trust_status TEXT DEFAULT 'unverified'",
+        'signing_public_key' => "ALTER TABLE following ADD COLUMN signing_public_key TEXT DEFAULT NULL",
+        'pending_public_key' => "ALTER TABLE following ADD COLUMN pending_public_key TEXT DEFAULT NULL",
+        'pending_pq_public' => "ALTER TABLE following ADD COLUMN pending_pq_public TEXT DEFAULT NULL",
+        'pending_signing_public_key' => "ALTER TABLE following ADD COLUMN pending_signing_public_key TEXT DEFAULT NULL",
+        'key_changed_at' => "ALTER TABLE following ADD COLUMN key_changed_at DATETIME DEFAULT NULL",
+        'trust_updated_at' => "ALTER TABLE following ADD COLUMN trust_updated_at DATETIME DEFAULT NULL",
+        'moderation_status' => "ALTER TABLE following ADD COLUMN moderation_status TEXT DEFAULT 'active'",
+        'remote_media_policy' => "ALTER TABLE following ADD COLUMN remote_media_policy TEXT DEFAULT 'allow'",
+        'moderation_updated_at' => "ALTER TABLE following ADD COLUMN moderation_updated_at DATETIME DEFAULT NULL",
+    ];
+
+    foreach ($following_migrations as $column => $sql) {
+        if (empty($following_columns[$column])) {
+            $db->exec($sql);
+        }
+    }
+
     $db->exec("CREATE TABLE IF NOT EXISTS ping_queue (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_url TEXT UNIQUE,
+        status TEXT DEFAULT 'pending',
+        is_known INTEGER DEFAULT 0,
+        reviewed_at DATETIME DEFAULT NULL,
         received_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )");
+
+    $ping_columns = [];
+    foreach ($db->query("PRAGMA table_info(ping_queue)")->fetchAll(PDO::FETCH_ASSOC) as $column) {
+        $ping_columns[$column['name']] = true;
+    }
+
+    $ping_migrations = [
+        'status' => "ALTER TABLE ping_queue ADD COLUMN status TEXT DEFAULT 'pending'",
+        'is_known' => "ALTER TABLE ping_queue ADD COLUMN is_known INTEGER DEFAULT 0",
+        'reviewed_at' => "ALTER TABLE ping_queue ADD COLUMN reviewed_at DATETIME DEFAULT NULL",
+    ];
+
+    foreach ($ping_migrations as $column => $sql) {
+        if (empty($ping_columns[$column])) {
+            $db->exec($sql);
+        }
+    }
 
     $db->exec("CREATE TABLE IF NOT EXISTS node_identity (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         public_key TEXT,
         private_key TEXT,
         pq_public TEXT DEFAULT NULL,
-        pq_private TEXT DEFAULT NULL
+        pq_private TEXT DEFAULT NULL,
+        signing_public_key TEXT DEFAULT NULL,
+        signing_private_key TEXT DEFAULT NULL
     )");
 
+    $identity_columns = [];
+    foreach ($db->query("PRAGMA table_info(node_identity)")->fetchAll(PDO::FETCH_ASSOC) as $column) {
+        $identity_columns[$column['name']] = true;
+    }
+
+    $identity_migrations = [
+        'signing_public_key' => "ALTER TABLE node_identity ADD COLUMN signing_public_key TEXT DEFAULT NULL",
+        'signing_private_key' => "ALTER TABLE node_identity ADD COLUMN signing_private_key TEXT DEFAULT NULL",
+    ];
+
+    foreach ($identity_migrations as $column => $sql) {
+        if (empty($identity_columns[$column])) {
+            $db->exec($sql);
+        }
+    }
+
     // 🧬 4. LAYER-1 CRYPTOGRAPHIC KEYPAIR IGNITION
-    $stmt = $db->query("SELECT public_key, private_key, pq_public, pq_private FROM node_identity WHERE id = 1");
+    $stmt = $db->query("SELECT public_key, private_key, pq_public, pq_private, signing_public_key, signing_private_key FROM node_identity WHERE id = 1");
     $keys = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$keys) {
@@ -125,20 +209,54 @@ try {
         $keypair = sodium_crypto_box_keypair();
         $public_key = base64_encode(sodium_crypto_box_publickey($keypair));
         $private_key = base64_encode(sodium_crypto_box_secretkey($keypair));
+
+        // v12.2: Ed25519 signing keys for public outbox post signatures.
+        $signing_keypair = sodium_crypto_sign_keypair();
+        $signing_public_key = base64_encode(sodium_crypto_sign_publickey($signing_keypair));
+        $signing_private_key = base64_encode(sodium_crypto_sign_secretkey($signing_keypair));
         
         // Quantum Mockup Keys injected via external CLI Keygen
-        $stmt_insert = $db->prepare("INSERT INTO node_identity (id, public_key, private_key, pq_public, pq_private) VALUES (1, :pub, :priv, NULL, NULL)");
-        $stmt_insert->execute([':pub' => $public_key, ':priv' => $private_key]);
+        $stmt_insert = $db->prepare("
+            INSERT INTO node_identity (id, public_key, private_key, pq_public, pq_private, signing_public_key, signing_private_key)
+            VALUES (1, :pub, :priv, NULL, NULL, :sign_pub, :sign_priv)
+        ");
+        $stmt_insert->execute([
+            ':pub' => $public_key,
+            ':priv' => $private_key,
+            ':sign_pub' => $signing_public_key,
+            ':sign_priv' => $signing_private_key,
+        ]);
         
         $config['public_key'] = $public_key;
         $config['private_key'] = $private_key;
         $config['pq_public'] = null;
         $config['pq_private'] = null;
+        $config['signing_public_key'] = $signing_public_key;
+        $config['signing_private_key'] = $signing_private_key;
     } else {
+        if (empty($keys['signing_public_key']) || empty($keys['signing_private_key'])) {
+            $signing_keypair = sodium_crypto_sign_keypair();
+            $keys['signing_public_key'] = base64_encode(sodium_crypto_sign_publickey($signing_keypair));
+            $keys['signing_private_key'] = base64_encode(sodium_crypto_sign_secretkey($signing_keypair));
+
+            $stmt_sign = $db->prepare("
+                UPDATE node_identity
+                SET signing_public_key = :sign_pub,
+                    signing_private_key = :sign_priv
+                WHERE id = 1
+            ");
+            $stmt_sign->execute([
+                ':sign_pub' => $keys['signing_public_key'],
+                ':sign_priv' => $keys['signing_private_key'],
+            ]);
+        }
+
         $config['public_key'] = $keys['public_key'];
         $config['private_key'] = $keys['private_key'];
         $config['pq_public'] = $keys['pq_public'] ?? null;
         $config['pq_private'] = $keys['pq_private'] ?? null;
+        $config['signing_public_key'] = $keys['signing_public_key'] ?? null;
+        $config['signing_private_key'] = $keys['signing_private_key'] ?? null;
     }
 
 } catch (PDOException $e) {

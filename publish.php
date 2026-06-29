@@ -3,6 +3,7 @@
 // 🏴‍☠️ DEADDROP: PUBLISH & SYNDICATE (v6.0 - Strict Quantum Ledger)
 // ==========================================
 require_once 'db.php';
+require_once 'auth.php';
 require_once 'net.php';
 require_once 'outbox.php';
 
@@ -90,11 +91,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     die("Access denied.");
 }
 
-$input_pass = $_POST['admin_pass'] ?? '';
-if (!password_verify($input_pass, $config['admin_hash'])) {
-    sleep(2);
-    terminal_error("[ ACCESS DENIED ] Invalid cryptographic credentials.");
+$auth_error = null;
+if (!deaddrop_action_allowed($auth_error)) {
+    sleep(1);
+    terminal_error($auth_error ?? "[ ACCESS DENIED ] Session expired.");
 }
+deaddrop_refresh_unlock(deaddrop_session_ttl($config));
+$master_key = deaddrop_master_key();
 
 $content = trim(strip_tags($_POST['content'] ?? ''));
 $reply_to = trim(strip_tags($_POST['reply_to'] ?? ''));
@@ -121,7 +124,7 @@ if (!empty($target)) {
     
     if (strpos($target, '@') === 0) {
         $alias = substr($target, 1);
-        $target_keys = find_peer_keys_by_alias($db, $alias, $input_pass);
+        $target_keys = find_peer_keys_by_alias($db, $alias, $master_key);
         if (!$target_keys) {
             terminal_error("[ E2EE ERROR ] Peer alias not registered in active radar or alias cannot be decrypted with this key.");
         }

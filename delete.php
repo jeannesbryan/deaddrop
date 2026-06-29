@@ -3,6 +3,7 @@
 // 🏴‍☠️ DEADDROP: TOMBSTONE PROTOCOL (v9.0 - Anti-Forensics Shredder)
 // ==========================================
 require_once 'db.php';
+require_once 'auth.php';
 require_once 'outbox.php';
 
 function terminal_error($message) {
@@ -15,13 +16,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     die("Access denied.");
 }
 
-$input_pass = $_POST['admin_pass'] ?? '';
-$remote_id = trim(strip_tags($_POST['remote_id'] ?? ''));
-
-if (!password_verify($input_pass, $config['admin_hash'])) {
-    sleep(2);
-    terminal_error("[ ACCESS DENIED ] Invalid cryptographic key.");
+$auth_error = null;
+if (!deaddrop_action_allowed($auth_error)) {
+    sleep(1);
+    terminal_error($auth_error ?? "[ ACCESS DENIED ] Session expired.");
 }
+deaddrop_refresh_unlock(deaddrop_session_ttl($config));
+$remote_id = trim(strip_tags($_POST['remote_id'] ?? ''));
 
 if (empty($remote_id)) {
     terminal_error("[ ERROR ] Target payload ID missing.");

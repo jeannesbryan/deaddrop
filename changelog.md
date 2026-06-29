@@ -286,3 +286,69 @@ The public documentation has been rewritten to match the actual security propert
 * **Post-Quantum Placeholder Disclosure:** The so-called PQ layer is documented as an experimental placeholder until a real audited ML-KEM/Kyber implementation is integrated.
 * **Zero-Knowledge Wording Correction:** DeadDrop no longer claims formal zero-knowledge guarantees where the implementation does not provide them.
 * **Threat Model Added:** The README and security notes now explain what DeadDrop attempts to reduce, what remains out of scope, and why the project should still be treated as experimental and unaudited.
+
+---
+
+## [v11.0] - THE OPERATIONS BASELINE
+DeadDrop v11.0 is an operational-safety release. It does not introduce new social-network features; it makes the node easier to run, easier to verify, easier to back up, and safer to operate across low-resource Tor deployments.
+
+### 🔒 PHASE 45: Short-Lived Admin Session Enforcement
+The unlock flow has been tightened around short-lived server-side sessions.
+* **10–15 Minute Unlock Window:** Admin unlock sessions now use a bounded TTL, with production guidance centered around 900 seconds.
+* **Server-Side Expiry:** Protected actions must pass the active server-side unlock check instead of re-sending the master password.
+* **CSRF-Guarded Actions:** Publish, delete, radar, and profile actions are protected by session-bound CSRF tokens.
+* **No Hidden Password Replays:** Protected forms no longer carry `admin_pass` or the master key through hidden inputs.
+
+### 🧾 PHASE 46: Outbox Schema Versioning
+The Nano-Pub feed now has an explicit version boundary for future protocol evolution.
+* **`schema_version`:** `outbox.json` now advertises schema version `2`.
+* **Protocol Metadata:** Feeds include a `protocol_version` field and a structured `node` block.
+* **Capabilities Advertisement:** Nodes can announce supported behavior such as E2EE, media, burner messages, padding, PoW, private-media policy, and signed-post readiness.
+* **Schema v2 Baseline:** DeadDrop v11+ now treats schema v2 as the minimum supported feed format.
+* **Legacy Feed Skip:** Schema-less legacy outboxes are skipped by the worker instead of being parsed through a compatibility path.
+* **Cleaner Future Path:** The stricter boundary keeps v12/v13 protocol work such as signed public posts, key pinning, encrypted media, and paranoid inbox mode easier to reason about.
+
+### 🩺 PHASE 47: CLI Health Check
+A dedicated terminal-only diagnostic command has been added for deployment verification.
+* **Runtime Checks:** `health.php` verifies PHP version, required extensions, core commands, config readability, session storage, SQLite health, outbox schema, and Tor SOCKS reachability.
+* **Nginx Exposure Tests:** The checker attempts to detect whether helper scripts such as `db.php`, `auth.php`, `worker.php`, `offload.php`, `health.php`, and `restore-backup.php` are blocked from direct web access.
+* **Machine Output Mode:** `--json` output is available for automation or log collection.
+* **Low-Risk Operations:** Health checks are read-only and intended to catch deployment mistakes before the node is exposed.
+
+### 🧳 PHASE 48: Age-Encrypted Backup & Restore
+Rotational backup has been upgraded from local compression to encrypted backup export.
+* **Encrypted Archives:** `offload.php` can now write `.tar.gz.age` archives using an age recipient key.
+* **Offline Secret Key Model:** The public age recipient may live in node config, while the private age identity should be kept offline or outside the webroot.
+* **Restore Script:** `restore-backup.php` provides a CLI-only restore flow for encrypted archives.
+* **Backup Health Checks:** `health.php` now checks for the `age` and `tar` commands, encrypted-backup configuration, and restore helper availability.
+* **Safer Default Documentation:** README now documents that encrypted backups reduce accidental backup disclosure but do not protect a compromised live host.
+
+---
+
+## [v12.0] - PEER TRUST & NETWORK INTEGRITY
+DeadDrop v12.0 is a federation-integrity release. It strengthens how nodes trust peer identity, verifies public feed authorship, and gives operators moderation controls for noisy, unknown, or unsafe peers.
+
+### 📌 PHASE 49: Peer Trust & Key Pinning
+Peer keys are no longer silently replaced during background sync.
+* **First-Seen Pinning:** The worker pins a peer's first observed encryption key and signing key.
+* **KEY CHANGED Guard:** If a peer later advertises different pinned keys, sync for that peer pauses and Radar displays `[ KEY CHANGED ]`.
+* **Manual Approval Flow:** Radar now provides explicit approve/reject controls for pending peer key changes.
+* **Fingerprint Visibility:** Radar and Profile display compact fingerprints for pinned and pending encryption/signing keys.
+* **Health Check Coverage:** `health.php` detects pending key approvals and required peer-trust columns.
+
+### ✍️ PHASE 50: Signed Public Posts
+Public outbox posts now carry Ed25519 signatures.
+* **Node Signing Keypair:** `db.php` creates and stores a local Ed25519 signing keypair in `node_identity`.
+* **Signed Outbox Export:** `outbox.php` signs each exported post and advertises `node.signing_public_key`.
+* **Signed Capability:** `outbox.json` advertises `signed_posts: true` and `protocol_version: "12"`.
+* **Worker Verification:** The worker verifies remote post signatures before processing tombstones or inserting posts.
+* **Pinned Signing Keys:** Signing keys are included in the same trust boundary as peer encryption keys.
+
+### 🧰 PHASE 51: Moderation, Quarantine & Remote Media Policy
+Operators can now slow down or block untrusted network edges.
+* **Peer Moderation State:** Radar can mark peers as active, quarantined, or blocked.
+* **Unknown Ping Review:** `ping.php` stores unknown knocks as pending instead of feeding them straight into worker sync.
+* **Quarantine Behavior:** Quarantined peers remain visible for review but are skipped by the worker.
+* **Block Behavior:** Blocked peers are rejected at ping time and skipped by the worker.
+* **Remote Media Drop:** Radar can set a per-peer remote media policy so worker discards remote `media_url` values during insert.
+* **Queue Hygiene:** The worker clears only trusted ping queue entries, leaving pending/quarantined knocks for Radar review.

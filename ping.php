@@ -33,6 +33,21 @@ if ($source_url === null) {
 }
 $host_domain = deaddrop_url_host($source_url);
 
+$peer_status = null;
+$peer_known = 0;
+$stmt_peer = $db->prepare("SELECT moderation_status FROM following WHERE onion_url = :url LIMIT 1");
+$stmt_peer->execute([':url' => $source_url]);
+$peer_row = $stmt_peer->fetch(PDO::FETCH_ASSOC);
+if ($peer_row) {
+    $peer_known = 1;
+    $peer_status = $peer_row['moderation_status'] ?? 'active';
+}
+
+if ($peer_status === 'blocked') {
+    http_response_code(403);
+    die("[!] REJECTED: This peer is blocked by node policy.");
+}
+
 // 📊 AUTO-SCALING DEFENSE QUEUE METRICS
 $queue_count = $db->query("SELECT COUNT(*) FROM ping_queue")->fetchColumn();
 
@@ -60,8 +75,24 @@ if ($queue_count > 200) {
 }
 
 try {
-    $stmt = $db->prepare("INSERT INTO ping_queue (source_url) VALUES (:url)");
-    $stmt->execute([':url' => $source_url]);
+    $queue_status = 'pending';
+    if ($peer_status === 'active') {
+        $queue_status = 'trusted';
+    } elseif ($peer_status === 'quarantined') {
+        $queue_status = 'quarantined';
+    }
+
+    $stmt = $db->prepare("INSERT OR IGNORE INTO ping_queue (source_url, status, is_known) VALUES (:url, :status, :known)");
+    $stmt->execute([':url' => $source_url, ':status' => $queue_status, ':known' => $peer_known]);
+
+    $stmt_update = $db->prepare("
+        UPDATE ping_queue
+        SET status = :status,
+            is_known = :known,
+            received_at = CURRENT_TIMESTAMP
+        WHERE source_url = :url
+    ");
+    $stmt_update->execute([':url' => $source_url, ':status' => $queue_status, ':known' => $peer_known]);
     
     // 📡 AIRGAPPED TELEGRAM BRIDGE (Routed strictly via Tor SOCKS5 Proxy)
     if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
@@ -83,9 +114,15 @@ try {
     }
     
     http_response_code(202);
-    echo "[+] ACCEPTED: Valid PoW verified (Difficulty: $difficulty). Ping entered the Worker queue.";
+    if ($queue_status === 'trusted') {
+        echo "[+] ACCEPTED: Valid PoW verified (Difficulty: $difficulty). Known peer entered the Worker queue.";
+    } elseif ($queue_status === 'quarantined') {
+        echo "[+] ACCEPTED: Valid PoW verified (Difficulty: $difficulty). Peer is quarantined pending admin review.";
+    } else {
+        echo "[+] ACCEPTED: Valid PoW verified (Difficulty: $difficulty). Unknown peer is pending Radar review.";
+    }
 } catch (PDOException $e) {
     http_response_code(202);
-    echo "[+] ACCEPTED: Ping is already queued for processing.";
+    echo "[+] ACCEPTED: Ping is already queued for review.";
 }
 ?>
