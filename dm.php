@@ -54,6 +54,111 @@ if ($unlocked) {
     }
 }
 
+function deaddrop_dm_decrypt_hybrid_content(string $content, $my_keypair, $my_pq_keypair) {
+    if (!(strpos($content, 'HYBRID:') === 0 || strpos($content, 'HYBRID-BURNER:') === 0)) {
+        return false;
+    }
+
+    $is_burner_drop = (strpos($content, 'HYBRID-BURNER:') === 0);
+    $offset = $is_burner_drop ? 14 : 7;
+    $payload_str = substr($content, $offset);
+    $parts = explode('::', $payload_str);
+    if (count($parts) !== 3) {
+        return false;
+    }
+
+    $nonce = base64_decode($parts[0]);
+    $kem_layer2 = base64_decode($parts[1]);
+    $ciphertext = base64_decode($parts[2]);
+
+    $kem_layer1 = false;
+    if ($my_pq_keypair) $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
+    if ($kem_layer1 === false) $kem_layer1 = $kem_layer2;
+
+    $sym_key = sodium_crypto_box_seal_open($kem_layer1, $my_keypair);
+    if ($sym_key === false) {
+        return false;
+    }
+
+    $decrypted = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $sym_key);
+    if ($decrypted === false) {
+        return false;
+    }
+
+    $noise_pos = strpos($decrypted, "\n[::NOISE::]");
+    if ($noise_pos !== false) $decrypted = substr($decrypted, 0, $noise_pos);
+
+    return $decrypted;
+}
+
+function deaddrop_dm_plaintext_for_media(array $post, $my_keypair, $my_pq_keypair) {
+    $content = (string)($post['content'] ?? '');
+    if (($post['is_local'] ?? 0) == 1 && strpos($content, '[[SPLIT_LEDGER]]') !== false) {
+        $ledger_parts = explode('[[SPLIT_LEDGER]]', $content, 2);
+        return $ledger_parts[0] ?? '';
+    }
+
+    $decrypted = deaddrop_dm_decrypt_hybrid_content($content, $my_keypair, $my_pq_keypair);
+    if ($decrypted !== false) {
+        return $decrypted;
+    }
+
+    return $content;
+}
+
+if (isset($_GET['private_media'])) {
+    if (!$unlocked) {
+        http_response_code(403);
+        die('[!] Vault locked.');
+    }
+
+    $media_remote_id = trim((string)$_GET['private_media']);
+    if ($media_remote_id === '' || !preg_match('/^[a-zA-Z0-9_:-]{1,120}$/', $media_remote_id)) {
+        http_response_code(400);
+        die('[!] Invalid private media reference.');
+    }
+
+    $stmt_media = $db->prepare("SELECT * FROM inbox WHERE remote_id = :rid LIMIT 1");
+    $stmt_media->execute([':rid' => $media_remote_id]);
+    $media_post = $stmt_media->fetch(PDO::FETCH_ASSOC);
+    if (!$media_post) {
+        http_response_code(404);
+        die('[!] Private media not found.');
+    }
+
+    $plain_for_media = deaddrop_dm_plaintext_for_media($media_post, $my_keypair, $my_pq_keypair);
+    [, $media_manifest] = deaddrop_extract_private_media_manifest($plain_for_media);
+    if (!$media_manifest) {
+        http_response_code(404);
+        die('[!] Private media manifest missing.');
+    }
+
+    $media_file = deaddrop_private_media_local_file($config, $media_manifest);
+    if ($media_file === null) {
+        http_response_code(404);
+        die('[!] Private media blob missing.');
+    }
+
+    $plaintext_media = deaddrop_private_media_decrypt_file($media_file, $media_manifest);
+    if ($plaintext_media === false) {
+        http_response_code(422);
+        die('[!] Private media decrypt failed.');
+    }
+
+    $allowed_mimes = array_values(deaddrop_private_media_allowed_mimes());
+    $mime = (string)($media_manifest['mime'] ?? 'application/octet-stream');
+    if (!in_array($mime, $allowed_mimes, true)) {
+        $mime = 'application/octet-stream';
+    }
+
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . strlen($plaintext_media));
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    echo $plaintext_media;
+    exit;
+}
+
 // 🧭 STATELESS NANO-PAGING LOGIC
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 if ($page < 1) $page = 1;
@@ -90,6 +195,9 @@ if ($unlocked) {
             
             // Queue burners for destruction
             if ($post['status'] === 'burner' && $post['is_local'] == 0) {
+                if (!empty($post['media_url']) && strpos((string)$post['media_url'], 'DDM:') === 0) {
+                    deaddrop_private_media_shred($config, (string)$post['media_url']);
+                }
                 $burner_ids[] = $post['id'];
             }
         }
@@ -191,6 +299,13 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                         <input type="checkbox" name="is_burner" value="1" class="t-toggle-checkbox">
                         <span class="t-checkmark"></span> [ 🔥 ENGAGE BURNER MODE ]
                     </label>
+                    <label class="t-checkbox-label mb-0 t-glow mt-2 w-100 text-private">
+                        <input type="checkbox" name="save_plaintext_copy" value="1" class="t-toggle-checkbox" <?= !empty($config['save_private_plaintext_copy']) ? 'checked' : '' ?>>
+                        <span class="t-checkmark"></span> [ SAVE LOCAL PLAINTEXT COPY OF OUTGOING DM ]
+                    </label>
+                    <div class="fs-small text-muted w-100">
+                        Default paranoid mode stores outgoing private drops as ciphertext only. If unchecked, you cannot re-read your sent DM locally.
+                    </div>
                     <input type="text" name="reply_to" class="t-input w-auto flex-fill m-0 border-private" placeholder="Reply to Post ID (Optional)">
                     
                     <select name="ttl" class="t-input w-auto m-0 t-input-sm border-private">
@@ -261,41 +376,28 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                         // 🔓 PURE EXTRAPOLATION LOGIC
                         $display_content = $post['content'];
                         $is_render_dimmed = false;
+                        $private_media_manifest = null;
 
                         // 1. CEK DOUBLE-LEDGER (Pesan Keluar Murni)
                         if ($post['is_local'] == 1 && strpos($display_content, '[[SPLIT_LEDGER]]') !== false) {
                             $ledger_parts = explode('[[SPLIT_LEDGER]]', $display_content);
-                            $display_content = "[🔓 DECRYPTED OUTGOING DROP]\n\n" . $ledger_parts[0];
+                            $plain_outgoing = $ledger_parts[0] ?? '';
+                            [$plain_outgoing, $private_media_manifest] = deaddrop_extract_private_media_manifest($plain_outgoing);
+                            $display_content = "[🔓 DECRYPTED OUTGOING DROP]\n\n" . $plain_outgoing;
                         } 
                         // 2. CEK CIPHERTEXT MASUK (Strictly HYBRID Framework)
                         elseif (strpos($display_content, 'HYBRID:') === 0 || strpos($display_content, 'HYBRID-BURNER:') === 0) {
                             $is_burner_drop = (strpos($display_content, 'HYBRID-BURNER:') === 0);
-                            $offset = $is_burner_drop ? 14 : 7;
-                            $payload_str = substr($display_content, $offset);
-                            $decrypted = false;
-
-                            $parts = explode('::', $payload_str);
-                            if (count($parts) === 3) {
-                                $nonce = base64_decode($parts[0]);
-                                $kem_layer2 = base64_decode($parts[1]);
-                                $ciphertext = base64_decode($parts[2]);
-
-                                $kem_layer1 = false;
-                                if ($my_pq_keypair) $kem_layer1 = sodium_crypto_box_seal_open($kem_layer2, $my_pq_keypair);
-                                if ($kem_layer1 === false) $kem_layer1 = $kem_layer2; // Backward compatible safety net
-
-                                $sym_key = sodium_crypto_box_seal_open($kem_layer1, $my_keypair);
-                                if ($sym_key !== false) {
-                                    $decrypted = sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $sym_key);
-                                }
-                            }
+                            $decrypted = deaddrop_dm_decrypt_hybrid_content($display_content, $my_keypair, $my_pq_keypair);
 
                             if ($decrypted !== false) {
-                                $noise_pos = strpos($decrypted, "\n[::NOISE::]");
-                                if ($noise_pos !== false) $decrypted = substr($decrypted, 0, $noise_pos);
+                                [$decrypted, $private_media_manifest] = deaddrop_extract_private_media_manifest($decrypted);
 
                                 $prefix_label = $is_burner_drop ? "[🔥 DECRYPTED BURNER DROP - DESTROYED UPON READING]\n\n" : "[🔓 DECRYPTED PRIVATE DROP]\n\n";
                                 $display_content = $prefix_label . $decrypted;
+                            } elseif ($post['is_local'] == 1) {
+                                $display_content = "[🔐 OUTGOING PRIVATE DROP]\n\nLocal plaintext copy was not saved. This sent message remains ciphertext-at-rest on this node.";
+                                $is_render_dimmed = true;
                             } else {
                                 $display_content = "[!] DECRYPTION FAILED: CORRUPTED CIPHERTEXT OR KEY MISMATCH.\n\n" . $display_content;
                                 $is_render_dimmed = true;
@@ -309,7 +411,10 @@ function get_parent_post($db, $reply_to_id, $alias_map = []) {
                         ?>
                         <div class="t-post-content private mt-1 <?= $is_render_dimmed ? 'dimmed' : '' ?>"><?= nl2br(htmlspecialchars($display_content)) ?></div>
                         
-                        <?php if (!empty($post['media_url'])): ?>
+                        <?php if ($private_media_manifest): ?>
+                            <div class="t-badge private ghost mb-2">[ ENCRYPTED DM MEDIA // DECRYPTED ON RENDER ]</div>
+                            <img src="dm.php?private_media=<?= urlencode($post['remote_id']) ?>" alt="Encrypted DM Media" class="t-media-attachment">
+                        <?php elseif (!empty($post['media_url']) && strpos((string)$post['media_url'], 'DDM:') !== 0): ?>
                             <img src="<?= htmlspecialchars($post['media_url']) ?>" alt="Attached Media" class="t-media-attachment">
                         <?php endif; ?>
                         

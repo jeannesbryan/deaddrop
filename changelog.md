@@ -352,3 +352,27 @@ Operators can now slow down or block untrusted network edges.
 * **Block Behavior:** Blocked peers are rejected at ping time and skipped by the worker.
 * **Remote Media Drop:** Radar can set a per-peer remote media policy so worker discards remote `media_url` values during insert.
 * **Queue Hygiene:** The worker clears only trusted ping queue entries, leaving pending/quarantined knocks for Radar review.
+
+---
+
+## [v13.0] - PRIVATE DATA HARDENING
+DeadDrop v13.0 is a private-data hardening release. It moves private media away from plaintext public attachments and tightens local private-message storage so sensitive DM content is decrypted only during an unlocked vault session.
+
+### 🗄️ PHASE 52: Encrypted DM Media
+Private media attachments are now encrypted before being exposed to peers.
+* **Ciphertext-Only DM Blobs:** Private DM media is encrypted into `.ddm` blobs under `media/private/`; these public files are ciphertext, not directly viewable images.
+* **Off-Webroot Cache:** Nodes can keep encrypted private-media cache files under `/var/lib/deaddrop/private-media`.
+* **Payload-Carried Media Keys:** The random media key, nonce, MIME type, blob URL, and integrity hash are stored inside the encrypted HYBRID private-drop payload.
+* **Unlock-Only Rendering:** `dm.php` decrypts and streams private media only while the vault is unlocked.
+* **Worker Cache:** `worker.php` can fetch encrypted remote `.ddm` blobs after successfully decrypting the private-drop envelope, then store them locally as ciphertext.
+* **Cleanup Coverage:** Delete, tombstone, expiry, and burner cleanup paths shred `DDM:` media pointers.
+* **Health Check Coverage:** `health.php` checks `private_media_path`, `media/private`, and encrypted/private media capabilities.
+
+### 🕶️ PHASE 53: Paranoid Inbox
+Private message storage now defaults toward ciphertext-at-rest.
+* **Ciphertext-First Incoming DM:** Incoming private drops remain as HYBRID ciphertext in the local inbox and are decrypted only during render after admin unlock.
+* **No Default Outgoing Plaintext Copy:** Outgoing private drops no longer keep a local plaintext split-ledger copy by default.
+* **Explicit Comfort Toggle:** The DM form includes an optional sender-side checkbox to save a local plaintext copy when the operator accepts that tradeoff.
+* **Safer Outbox Export:** `outbox.php` strips private media pointers from private-drop exports whether the outgoing DM is stored with or without a split ledger.
+* **Capability Advertisement:** `outbox.json` advertises `encrypted_media: true`, `private_media: true`, and `paranoid_inbox: true`.
+* **Residual Plaintext Detection:** `health.php` warns if older outgoing split-ledger plaintext copies are still present in the local inbox.

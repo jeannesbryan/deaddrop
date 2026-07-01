@@ -95,6 +95,9 @@ function dd_health_load_config(string $app_root): array {
         'outbox_schema_version' => 2,
         'session_ttl_seconds' => 900,
         'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
+        'private_media_path' => '/var/lib/deaddrop/private-media',
+        'paranoid_inbox' => true,
+        'save_private_plaintext_copy' => false,
         'backup_path' => '/var/backups/deaddrop',
         'backup_retention' => 7,
         'backup_include_config' => true,
@@ -248,6 +251,13 @@ function dd_health_check_sqlite(array $config): void {
             }
         }
 
+        $local_plaintext_copies = (int)$pdo->query("SELECT COUNT(*) FROM inbox WHERE is_local = 1 AND content LIKE '%[[SPLIT_LEDGER]]%'")->fetchColumn();
+        if ($local_plaintext_copies > 0) {
+            dd_health_warn('Outgoing plaintext split-ledger copies', $local_plaintext_copies . ' local outgoing DM(s) still keep plaintext copies.');
+        } else {
+            dd_health_ok('Outgoing plaintext split-ledger copies', 'none detected');
+        }
+
         $identity_columns = [];
         foreach ($pdo->query("PRAGMA table_info(node_identity)")->fetchAll(PDO::FETCH_ASSOC) as $column) {
             $identity_columns[$column['name']] = true;
@@ -355,6 +365,22 @@ function dd_health_check_outbox(array $config): void {
         dd_health_ok('outbox signed_posts capability', 'enabled');
     } else {
         dd_health_fail('outbox signed_posts capability', 'signed_posts is not enabled; rebuild outbox after v12.2.');
+    }
+
+    $encrypted_media_capability = $feed['node']['capabilities']['encrypted_media'] ?? $feed['capabilities']['encrypted_media'] ?? null;
+    $private_media_capability = $feed['node']['capabilities']['private_media'] ?? $feed['capabilities']['private_media'] ?? null;
+    if (($encrypted_media_capability === true || $encrypted_media_capability === 1 || $encrypted_media_capability === '1')
+        && ($private_media_capability === true || $private_media_capability === 1 || $private_media_capability === '1')) {
+        dd_health_ok('outbox encrypted private media capability', 'enabled');
+    } else {
+        dd_health_warn('outbox encrypted private media capability', 'not advertised yet; rebuild outbox after v13.1.');
+    }
+
+    $paranoid_inbox_capability = $feed['node']['capabilities']['paranoid_inbox'] ?? $feed['capabilities']['paranoid_inbox'] ?? null;
+    if ($paranoid_inbox_capability === true || $paranoid_inbox_capability === 1 || $paranoid_inbox_capability === '1') {
+        dd_health_ok('outbox paranoid_inbox capability', 'enabled');
+    } else {
+        dd_health_warn('outbox paranoid_inbox capability', 'not advertised yet; rebuild outbox after v13.2.');
     }
 
     if (isset($feed['node']['signing_public_key'])) {
@@ -557,9 +583,21 @@ if ($outbox_schema >= 2) {
     dd_health_fail('Configured outbox schema', 'DeadDrop v11+ requires outbox_schema_version >= 2.');
 }
 
+if (!empty($config['paranoid_inbox'])) {
+    dd_health_ok('Paranoid inbox config', 'enabled');
+} else {
+    dd_health_warn('Paranoid inbox config', 'disabled; private DM UX may keep more plaintext locally.');
+}
+
+if (empty($config['save_private_plaintext_copy'])) {
+    dd_health_ok('Outgoing private plaintext copy', 'disabled by default');
+} else {
+    dd_health_warn('Outgoing private plaintext copy', 'enabled by default; outgoing DMs may store local plaintext split-ledger copies.');
+}
+
 // Storage path checks.
 $webroot = realpath($app_root) ?: $app_root;
-foreach (['db_path', 'backup_path'] as $key) {
+foreach (['db_path', 'backup_path', 'private_media_path'] as $key) {
     $path = (string)($config[$key] ?? '');
     if ($path === '') {
         dd_health_fail($key, 'empty path');
@@ -574,12 +612,43 @@ foreach (['db_path', 'backup_path'] as $key) {
     }
 }
 
+$private_media_dir = (string)($config['private_media_path'] ?? '');
+if ($private_media_dir !== '') {
+    if (!is_dir($private_media_dir)) {
+        if (@mkdir($private_media_dir, 0700, true)) {
+            dd_health_ok('Private media cache directory created', $private_media_dir);
+        } else {
+            dd_health_fail('Private media cache directory', "$private_media_dir does not exist and could not be created.");
+        }
+    }
+    if (is_dir($private_media_dir)) {
+        if (is_writable($private_media_dir)) dd_health_ok('Private media cache writable', $private_media_dir);
+        else dd_health_fail('Private media cache writable', "$private_media_dir is not writable by current user.");
+
+        $perms = dd_health_bytes_perms($private_media_dir);
+        $mode = @fileperms($private_media_dir);
+        if ($mode !== false && ($mode & 0007)) {
+            dd_health_warn('Private media cache permissions', "$private_media_dir mode $perms; recommended 0700.");
+        } else {
+            dd_health_ok('Private media cache permissions', "$private_media_dir mode $perms.");
+        }
+    }
+}
+
 $media_dir = $app_root . '/media';
 if (is_dir($media_dir)) {
     if (is_writable($media_dir)) dd_health_ok('Public media directory writable', $media_dir);
     else dd_health_fail('Public media directory writable', "$media_dir is not writable by current user.");
 } else {
     dd_health_warn('Public media directory', "$media_dir does not exist. Public media uploads may fail.");
+}
+
+$public_private_media_dir = $app_root . '/media/private';
+if (is_dir($public_private_media_dir)) {
+    if (is_writable($public_private_media_dir)) dd_health_ok('Encrypted DM blob directory writable', $public_private_media_dir);
+    else dd_health_fail('Encrypted DM blob directory writable', "$public_private_media_dir is not writable by current user.");
+} else {
+    dd_health_warn('Encrypted DM blob directory', "$public_private_media_dir does not exist yet. It will be created on first private media upload.");
 }
 
 $session_dir = '/run/deaddrop-sessions';

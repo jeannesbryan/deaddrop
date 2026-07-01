@@ -21,6 +21,15 @@ return [
     // Sensitive database storage outside webroot
     'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
 
+    // v13.1: encrypted private-media cache outside webroot.
+    // Public DM media is exported only as ciphertext .ddm blobs under /media/private/.
+    'private_media_path' => '/var/lib/deaddrop/private-media',
+
+    // v13.2: paranoid inbox defaults.
+    // false means outgoing private drops are stored locally as ciphertext only.
+    'paranoid_inbox' => true,
+    'save_private_plaintext_copy' => false,
+
     // Sensitive backup storage outside webroot
     'backup_path' => '/var/backups/deaddrop',
     'backup_retention' => 7,

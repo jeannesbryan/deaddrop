@@ -21,6 +21,15 @@ $default_config = [
     // Sensitive SQLite storage outside webroot
     'db_path'     => '/var/lib/deaddrop/deaddrop.sqlite',
 
+    // v13.1: local encrypted private-media cache outside webroot.
+    // Public encrypted DM blobs are still exported under media/private/ as ciphertext-only .ddm files.
+    'private_media_path' => '/var/lib/deaddrop/private-media',
+
+    // v13.2: paranoid inbox defaults.
+    // Incoming private drops remain ciphertext-at-rest; outgoing private drops do not keep plaintext unless requested.
+    'paranoid_inbox' => true,
+    'save_private_plaintext_copy' => false,
+
     // Sensitive backup storage outside webroot
     'backup_path' => '/var/backups/deaddrop',
     'backup_retention' => 7,
@@ -265,5 +274,126 @@ try {
 
 function generate_local_id() {
     return 'dd_' . bin2hex(random_bytes(6)) . '_' . time();
+}
+
+function deaddrop_private_media_path(array $config): string {
+    $path = trim((string)($config['private_media_path'] ?? ''));
+    if ($path === '') {
+        $path = dirname((string)$config['db_path']) . '/private-media';
+    }
+
+    if (!is_dir($path)) {
+        mkdir($path, 0700, true);
+    }
+    @chmod($path, 0700);
+
+    return rtrim($path, '/');
+}
+
+function deaddrop_public_private_media_path(): string {
+    $path = __DIR__ . '/media/private';
+    if (!is_dir($path)) {
+        mkdir($path, 0755, true);
+    }
+    @chmod($path, 0755);
+
+    return $path;
+}
+
+function deaddrop_private_media_allowed_mimes(): array {
+    return [
+        'jpg' => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'png' => 'image/png',
+        'gif' => 'image/gif',
+        'webp' => 'image/webp',
+    ];
+}
+
+function deaddrop_private_media_marker(array $manifest): string {
+    $json = json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    return "\n[::DEADDROP_PRIVATE_MEDIA_V1::]" . base64_encode($json);
+}
+
+function deaddrop_extract_private_media_manifest(string $content): array {
+    $marker = "\n[::DEADDROP_PRIVATE_MEDIA_V1::]";
+    $pos = strpos($content, $marker);
+    if ($pos === false) {
+        return [$content, null];
+    }
+
+    $visible = substr($content, 0, $pos);
+    $encoded = trim(substr($content, $pos + strlen($marker)));
+    $encoded = strtok($encoded, "\r\n");
+    $decoded = base64_decode((string)$encoded, true);
+    if ($decoded === false) {
+        return [$visible, null];
+    }
+
+    $manifest = json_decode($decoded, true);
+    if (!is_array($manifest) || (($manifest['type'] ?? '') !== 'deaddrop-private-media')) {
+        return [$visible, null];
+    }
+
+    return [$visible, $manifest];
+}
+
+function deaddrop_private_media_local_file(array $config, array $manifest): ?string {
+    $stored_name = basename((string)($manifest['stored_name'] ?? ''));
+    if ($stored_name === '' || !preg_match('/^[a-f0-9]{64}\.ddm$/', $stored_name)) {
+        return null;
+    }
+
+    $private_file = deaddrop_private_media_path($config) . '/' . $stored_name;
+    if (is_file($private_file)) {
+        return $private_file;
+    }
+
+    $public_file = deaddrop_public_private_media_path() . '/' . $stored_name;
+    if (is_file($public_file)) {
+        return $public_file;
+    }
+
+    return null;
+}
+
+function deaddrop_private_media_decrypt_file(string $path, array $manifest) {
+    $key = base64_decode((string)($manifest['key'] ?? ''), true);
+    $nonce = base64_decode((string)($manifest['nonce'] ?? ''), true);
+    if ($key === false || strlen($key) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES) {
+        return false;
+    }
+    if ($nonce === false || strlen($nonce) !== SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES) {
+        return false;
+    }
+
+    $ciphertext = file_get_contents($path);
+    if ($ciphertext === false) {
+        return false;
+    }
+
+    if (!empty($manifest['cipher_sha256']) && !hash_equals((string)$manifest['cipher_sha256'], hash('sha256', $ciphertext))) {
+        return false;
+    }
+
+    return sodium_crypto_aead_xchacha20poly1305_ietf_decrypt($ciphertext, '', $nonce, $key);
+}
+
+function deaddrop_private_media_shred(array $config, ?string $media_url): void {
+    if (empty($media_url) || strpos($media_url, 'DDM:') !== 0) {
+        return;
+    }
+
+    $stored_name = basename(substr($media_url, 4));
+    if ($stored_name === '' || !preg_match('/^[a-f0-9]{64}\.ddm$/', $stored_name)) {
+        return;
+    }
+
+    foreach ([deaddrop_private_media_path($config), deaddrop_public_private_media_path()] as $dir) {
+        $file = $dir . '/' . $stored_name;
+        if (is_file($file)) {
+            exec('shred -u -z -n 3 ' . escapeshellarg($file));
+        }
+    }
 }
 ?>

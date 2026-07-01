@@ -72,7 +72,7 @@ if (!function_exists('deaddrop_outbox_capabilities')) {
             'e2ee' => true,
             'private_drops' => true,
             'public_media' => true,
-            'private_media' => false,
+            'private_media' => true,
             'ttl' => true,
             'burner' => true,
             'tombstone' => true,
@@ -80,8 +80,8 @@ if (!function_exists('deaddrop_outbox_capabilities')) {
             'atomic_outbox' => true,
             'server_side_unlock_session' => true,
             'signed_posts' => true,
-            'encrypted_media' => false,
-            'paranoid_inbox' => false,
+            'encrypted_media' => true,
+            'paranoid_inbox' => true,
             'pq_placeholder' => !empty($config['pq_public'])
         ];
     }
@@ -132,6 +132,8 @@ if (!function_exists('deaddrop_prepare_outbox_post')) {
         if (strpos($content, '[[SPLIT_LEDGER]]') !== false) {
             $ledger_parts = explode('[[SPLIT_LEDGER]]', $content, 2);
             $post['content'] = $ledger_parts[1] ?? '';
+            $post['media_url'] = null;
+        } elseif (strpos($content, 'HYBRID:') === 0 || strpos($content, 'HYBRID-BURNER:') === 0) {
             $post['media_url'] = null;
         }
 

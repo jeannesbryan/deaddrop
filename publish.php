@@ -117,10 +117,16 @@ $target = trim(strip_tags($_POST['target'] ?? ''));
 $is_private_drop = false;
 $is_burner = (isset($_POST['is_burner']) && $_POST['is_burner'] == '1');
 $has_media_upload = (isset($_FILES['media']) && ($_FILES['media']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK);
+$private_media_manifest = null;
+$private_media_pointer = null;
+$save_private_plaintext_copy = !empty($config['save_private_plaintext_copy']);
 
 if (!empty($target)) {
     $is_private_drop = true;
-    $pristine_plaintext = $content; // Retain clean plaintext for local sender view
+    if (isset($_POST['save_plaintext_copy'])) {
+        $save_private_plaintext_copy = ($_POST['save_plaintext_copy'] === '1');
+    }
+    $pristine_plaintext = $content;
     
     if (strpos($target, '@') === 0) {
         $alias = substr($target, 1);
@@ -137,6 +143,67 @@ if (!empty($target)) {
     $target_pq_pub  = null;
     if (!empty($target_keys['pq_public'])) {
         $target_pq_pub = decode_public_key_or_fail($target_keys['pq_public'], 'Target PQ Public Key');
+    }
+
+    if ($has_media_upload) {
+        $file_tmp  = $_FILES['media']['tmp_name'];
+        $file_name = (string)($_FILES['media']['name'] ?? 'private-media');
+        $file_size = (int)($_FILES['media']['size'] ?? 0);
+
+        if ($file_size <= 0 || $file_size > 2097152) {
+            terminal_error("[ E2EE MEDIA ERROR ] Private media exceeds the 2MB limit.");
+        }
+
+        $ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+        $allowed_mimes = deaddrop_private_media_allowed_mimes();
+        if (!isset($allowed_mimes[$ext])) {
+            terminal_error("[ E2EE MEDIA ERROR ] Unsupported private media type.");
+        }
+
+        $plaintext_media = file_get_contents($file_tmp);
+        if ($plaintext_media === false) {
+            terminal_error("[ E2EE MEDIA ERROR ] Could not read uploaded private media.");
+        }
+
+        $media_key = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_KEYBYTES);
+        $media_nonce = random_bytes(SODIUM_CRYPTO_AEAD_XCHACHA20POLY1305_IETF_NPUBBYTES);
+        $cipher_media = sodium_crypto_aead_xchacha20poly1305_ietf_encrypt($plaintext_media, '', $media_nonce, $media_key);
+        sodium_memzero($plaintext_media);
+
+        $stored_name = hash('sha256', $cipher_media . random_bytes(16)) . '.ddm';
+        $public_private_dir = deaddrop_public_private_media_path();
+        $public_private_file = $public_private_dir . '/' . $stored_name;
+        if (file_put_contents($public_private_file, $cipher_media, LOCK_EX) === false) {
+            terminal_error("[ E2EE MEDIA ERROR ] Could not store encrypted private media blob.");
+        }
+        @chmod($public_private_file, 0644);
+
+        $private_media_dir = deaddrop_private_media_path($config);
+        $private_media_file = $private_media_dir . '/' . $stored_name;
+        @copy($public_private_file, $private_media_file);
+        @chmod($private_media_file, 0600);
+
+        $private_media_manifest = [
+            'type' => 'deaddrop-private-media',
+            'version' => 1,
+            'alg' => 'xchacha20poly1305-ietf',
+            'stored_name' => $stored_name,
+            'url' => rtrim($config['node_url'], '/') . '/media/private/' . $stored_name,
+            'mime' => $allowed_mimes[$ext],
+            'original_name' => basename($file_name),
+            'size' => $file_size,
+            'key' => base64_encode($media_key),
+            'nonce' => base64_encode($media_nonce),
+            'cipher_sha256' => hash('sha256', $cipher_media),
+        ];
+        $private_media_pointer = 'DDM:' . $stored_name;
+
+        sodium_memzero($media_key);
+        sodium_memzero($media_nonce);
+        sodium_memzero($cipher_media);
+
+        $content .= deaddrop_private_media_marker($private_media_manifest);
+        $pristine_plaintext = $content;
     }
 
     // 🛡️ DENIABLE UNIFORM NOISE PADDING (4KB BLOCK ALIGNMENT)
@@ -172,20 +239,17 @@ if (!empty($target)) {
     $prefix = $is_burner ? 'HYBRID-BURNER:' : 'HYBRID:';
     $encrypted_vault_envelope = $prefix . $final_payload;
 
-    // 🧬 DOUBLE-LEDGER BINDING: Fuse pristine plaintext with ciphertext envelope
-    $content = $pristine_plaintext . "[[SPLIT_LEDGER]]" . $encrypted_vault_envelope;
-}
-
-// 🛡️ PRIVATE MEDIA LOCKDOWN
-// Until encrypted media envelopes are implemented, never attach public /media URLs to private drops.
-// Otherwise outbox.json can leak a tracking-capable media URL beside an encrypted DM envelope.
-if ($is_private_drop && $has_media_upload) {
-    terminal_error("[ E2EE ERROR ] Private media attachments are disabled until encrypted media support is implemented. Send this as a text-only secure drop, or publish media publicly.");
+    if ($save_private_plaintext_copy) {
+        // Optional sender-side comfort mode. Disabled by default in v13.2.
+        $content = $pristine_plaintext . "[[SPLIT_LEDGER]]" . $encrypted_vault_envelope;
+    } else {
+        $content = $encrypted_vault_envelope;
+    }
 }
 
 // 📷 EXIF-STRIPPED MEDIA PROCESSING
-$media_url = null;
-if (isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
+$media_url = $private_media_pointer;
+if (!$is_private_drop && isset($_FILES['media']) && $_FILES['media']['error'] === UPLOAD_ERR_OK) {
     $file_tmp  = $_FILES['media']['tmp_name'];
     $file_name = $_FILES['media']['name'];
     $file_size = $_FILES['media']['size'];

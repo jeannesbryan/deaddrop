@@ -253,6 +253,65 @@ function deaddrop_peer_moderation_policy(PDO $db, string $onion_url): array {
     ];
 }
 
+function deaddrop_cache_remote_private_media(array $config, array $manifest): ?string {
+    if (($manifest['type'] ?? '') !== 'deaddrop-private-media') {
+        return null;
+    }
+
+    $stored_name = basename((string)($manifest['stored_name'] ?? ''));
+    $url = (string)($manifest['url'] ?? '');
+    if ($stored_name === '' || !preg_match('/^[a-f0-9]{64}\.ddm$/', $stored_name)) {
+        return null;
+    }
+    if (!preg_match('/^https?:\/\//i', $url)) {
+        return null;
+    }
+
+    $target_file = deaddrop_private_media_path($config) . '/' . $stored_name;
+    if (is_file($target_file)) {
+        return 'DDM:' . $stored_name;
+    }
+
+    $buffer = '';
+    $too_large = false;
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
+    curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
+    curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, string $chunk) use (&$buffer, &$too_large): int {
+        if (strlen($buffer) + strlen($chunk) > 2097152) {
+            $too_large = true;
+            return 0;
+        }
+        $buffer .= $chunk;
+        return strlen($chunk);
+    });
+
+    if (deaddrop_should_use_tor_proxy($url)) {
+        curl_setopt($ch, CURLOPT_PROXY, "127.0.0.1:9050");
+        curl_setopt($ch, CURLOPT_PROXYTYPE, CURLPROXY_SOCKS5_HOSTNAME);
+    }
+
+    curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($too_large || $http_code !== 200 || $buffer === '') {
+        return null;
+    }
+    if (!empty($manifest['cipher_sha256']) && !hash_equals((string)$manifest['cipher_sha256'], hash('sha256', $buffer))) {
+        return null;
+    }
+
+    if (file_put_contents($target_file, $buffer, LOCK_EX) === false) {
+        return null;
+    }
+    @chmod($target_file, 0600);
+
+    return 'DDM:' . $stored_name;
+}
+
 echo "============================================\n";
 echo "   DEADDROP WORKER INITIATED (V12 SIGNED SCHEMA V2+)\n";
 echo "   TIME: " . gmdate('Y-m-d H:i:s') . " UTC\n";
@@ -276,8 +335,12 @@ try {
     $expired_count = 0;
     foreach ($stmt_exp->fetchAll(PDO::FETCH_ASSOC) as $exp) {
         if (!empty($exp['media_url'])) {
-            $target_media = __DIR__ . '/media/' . basename($exp['media_url']);
-            if (file_exists($target_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_media));
+            if (strpos((string)$exp['media_url'], 'DDM:') === 0) {
+                deaddrop_private_media_shred($config, (string)$exp['media_url']);
+            } else {
+                $target_media = __DIR__ . '/media/' . basename($exp['media_url']);
+                if (file_exists($target_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_media));
+            }
         }
         delete_signal_by_remote_id($db, (string)$exp['remote_id']);
         $expired_count++;
@@ -474,8 +537,12 @@ try {
                 
                 // PHYSICAL DATA VAPORIZATION (Shredding external media)
                 if ($del_media) {
-                    $target_del_media = __DIR__ . '/media/' . basename($del_media);
-                    if (file_exists($target_del_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_del_media));
+                    if (strpos((string)$del_media, 'DDM:') === 0) {
+                        deaddrop_private_media_shred($config, (string)$del_media);
+                    } else {
+                        $target_del_media = __DIR__ . '/media/' . basename($del_media);
+                        if (file_exists($target_del_media)) exec('shred -u -z -n 3 ' . escapeshellarg($target_del_media));
+                    }
                 }
                 
                 delete_signal_by_remote_id($db, (string)$remote_id);
@@ -490,6 +557,7 @@ try {
                 $raw_content = $post['content'] ?? '';
                 $is_decrypted_successfully = false;
                 $is_burner_received = false;
+                $private_media_pointer = null;
 
                 if (strpos($raw_content, 'HYBRID:') === 0 || strpos($raw_content, 'HYBRID-BURNER:') === 0) {
                     $is_burner_received = (strpos($raw_content, 'HYBRID-BURNER:') === 0);
@@ -516,6 +584,13 @@ try {
 
                     if ($decrypted !== false) {
                         $is_decrypted_successfully = true; 
+                        [, $private_media_manifest] = deaddrop_extract_private_media_manifest($decrypted);
+                        if ($private_media_manifest) {
+                            $private_media_pointer = deaddrop_cache_remote_private_media($config, $private_media_manifest);
+                            if ($private_media_pointer === null) {
+                                echo "        [!] Private media blob could not be cached for: " . $remote_id . "\n";
+                            }
+                        }
                         
                         if ($config['tg_on'] && !empty($config['tg_token']) && !empty($config['tg_chat'])) {
                             $drop_type = $is_burner_received ? "🔥 HYBRID BURNER" : "🔓 HYBRID DROP";
@@ -544,7 +619,7 @@ try {
                 if ($is_decrypted_successfully) {
                     // Private drops must not auto-load remote/public media URLs.
                     // Encrypted media support should carry a file key inside the encrypted payload instead.
-                    $safe_media = null;
+                    $safe_media = $private_media_pointer;
                 } elseif ($peer_policy['remote_media_policy'] === 'drop') {
                     $safe_media = null;
                 } elseif ($safe_media && !preg_match('/^https?:\/\//i', $safe_media)) {

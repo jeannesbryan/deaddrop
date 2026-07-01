@@ -50,11 +50,15 @@ try {
 
     // 2. PURGE ASSOCIATED MEDIA FROM eMMC (PHYSICAL DATA VAPORIZATION)
     if (!empty($post['media_url'])) {
-        $file_name = basename($post['media_url']);
-        $file_path = __DIR__ . '/media/' . $file_name;
-        if (file_exists($file_path)) {
-            // shred -u (remove), -z (zero out), -n 3 (3 passes)
-            exec('shred -u -z -n 3 ' . escapeshellarg($file_path));
+        if (strpos((string)$post['media_url'], 'DDM:') === 0) {
+            deaddrop_private_media_shred($config, (string)$post['media_url']);
+        } else {
+            $file_name = basename($post['media_url']);
+            $file_path = __DIR__ . '/media/' . $file_name;
+            if (file_exists($file_path)) {
+                // shred -u (remove), -z (zero out), -n 3 (3 passes)
+                exec('shred -u -z -n 3 ' . escapeshellarg($file_path));
+            }
         }
     }
 
